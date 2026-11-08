@@ -117,47 +117,62 @@
       <div><div class="eyebrow">WORKSPACE / 工作区</div><h2>知识源与文档</h2></div>
       <span class="section-desc">挂载 · 分组 · 排除 · 文档浏览</span>
     </div>
-    <section class="panels">
-      <!-- 笔记分组（§15.6 / GR-07） -->
-      <div class="panel">
-        <h3>笔记分组 <button class="btn small" @click="groupAddOpen = !groupAddOpen">＋ 建组</button></h3>
+    <section class="notes-layout">
+      <aside class="notes-col groups-col panel">
+        <div class="col-head">
+          <div><div class="eyebrow">GROUPS</div><h3>笔记分组</h3></div>
+          <button class="btn small" @click="groupAddOpen = !groupAddOpen">＋ 建组</button>
+        </div>
         <div v-if="groupAddOpen" class="row">
           <input v-model="newGroupName" placeholder="组名（如 数据库）" @keyup.enter="addGroup">
-          <button class="btn" @click="addGroup">建组</button>
+          <button class="btn small" @click="addGroup">建组</button>
         </div>
-        <ul>
-          <li v-for="g in groups" :key="g.group_id" class="group-row">
-            <span class="group-name" :class="{ active: docsFilter.groupId === g.group_id }"
-                  @click="toggleGroupFilter(g)">{{ g.name }}</span>
-            <span class="muted small">（成员 {{ g.members }} · 文档 {{ g.docs }}）</span>
-            <button class="btn small" @click="toggleGroupDetail(g)">成员</button>
-            <button class="btn small" @click="excludeGroup(g)">整组排除</button>
-            <button class="btn small danger" @click="removeGroup(g)">删组</button>
-          </li>
-          <li v-if="!groups.length" class="muted small">还没有分组。建组后可把挂载或文档归入（一个来源可属多组）</li>
-        </ul>
+        <div class="group-list">
+          <div class="group-item" :class="{ active: !docsFilter.groupId }" @click="selectGroup(null)">
+            <span class="group-ico">◈</span>
+            <span class="group-name">全部笔记</span>
+            <span class="group-count">{{ stats.indexed }}</span>
+          </div>
+          <div v-for="g in groups" :key="g.group_id" class="group-item" :class="{ active: docsFilter.groupId === g.group_id }" @click="selectGroup(g)">
+            <span class="group-ico">#</span>
+            <span class="group-name">{{ g.name }}</span>
+            <span class="group-count">{{ g.docs }}</span>
+          </div>
+          <div v-if="!groups.length" class="empty-inline">还没有分组，建组后把挂载或文档归入。</div>
+        </div>
         <div v-if="activeGroup" class="group-detail">
-          <h4>「{{ activeGroup.name }}」成员
+          <div class="group-detail-head">
+            <strong>{{ activeGroup.name }}</strong>
+            <div class="group-detail-actions">
+              <button class="btn small danger" @click="excludeGroup(activeGroup)">整组排除</button>
+              <button class="btn small danger" @click="removeGroup(activeGroup)">删组</button>
+            </div>
+          </div>
+          <p class="muted small">成员 {{ activeGroup.members }} · 文档 {{ activeGroup.docs }}</p>
+          <ul class="member-list">
+            <li v-for="m in groupMembers" :key="m.member_id">
+              <span class="badge">{{ m.kind }}</span>
+              <span class="member-path">{{ m.path }}{{ m.rel_path ? ' / ' + m.rel_path : '' }}</span>
+              <button class="btn small danger" @click="removeMember(m)">移出</button>
+            </li>
+            <li v-if="!groupMembers.length" class="muted small">暂无成员；在下方把挂载/文档归入。</li>
+          </ul>
+          <div class="member-add">
             <select v-model="memberForm.mountId" class="small-input">
               <option value="">选择挂载</option>
               <option v-for="m in mounts" :key="m.mount_id" :value="m.mount_id">{{ m.kind }} · {{ m.path }}</option>
             </select>
-            <input v-model="memberForm.relPath" class="small-input" placeholder="文档相对路径（留空=整个挂载）">
+            <input v-model="memberForm.relPath" class="small-input" placeholder="相对路径（留空=整个挂载）">
             <button class="btn small" @click="addMember">归组</button>
-          </h4>
-          <ul>
-            <li v-for="m in groupMembers" :key="m.member_id">
-              {{ m.kind }} · {{ m.path }}{{ m.rel_path ? ' / ' + m.rel_path : '' }}
-              <button class="btn small danger" @click="removeMember(m)">移出</button>
-            </li>
-          </ul>
-          <p class="muted small">整组排除会生成真实排除规则记录；删组不影响已生成规则；规则可在排除面板单独删除。</p>
+          </div>
         </div>
-      </div>
+      </aside>
 
-      <!-- 挂载管理（类型徽标） -->
-      <div class="panel">
-        <h3>挂载管理 <button class="btn small" @click="mountAddOpen = !mountAddOpen">＋ 添加</button></h3>
+      <section class="notes-col mounts-col panel">
+        <div class="col-head">
+          <div><div class="eyebrow">SOURCES</div><h3>挂载管理</h3></div>
+          <button class="btn small" @click="mountAddOpen = !mountAddOpen">＋ 添加</button>
+        </div>
         <div v-if="mountAddOpen" class="row">
           <select v-model="newMountKind">
             <option value="auto">自动识别</option>
@@ -167,22 +182,62 @@
             <option value="file">单文件</option>
           </select>
           <input v-model="newMount" placeholder="绝对路径" @keyup.enter="addMount">
-          <button class="btn" @click="addMount">添加</button>
+          <button class="btn small" @click="addMount">添加</button>
         </div>
-        <ul>
-          <li v-for="m in mounts" :key="m.mount_id">
-            <span class="badge kind">{{ kindLabel(m.kind) }}</span> {{ m.path }}
-            <span class="muted small">（{{ m.docs }} 篇）</span>
-            <button class="btn small" @click="docsFilter.mountId = docsFilter.mountId === m.mount_id ? '' : m.mount_id; loadDocs()">
-              {{ docsFilter.mountId === m.mount_id ? '取消筛选' : '筛选' }}</button>
-            <button class="btn small danger" @click="removeMount(m.mount_id)">移除</button>
-          </li>
-          <li v-if="!mounts.length" class="muted small">还没有挂载，点「＋ 添加」挂载你的笔记目录/文件/Obsidian 库/思源工作区</li>
-        </ul>
-      </div>
+        <p class="muted small" v-if="activeGroup">当前分组：{{ activeGroup.name }} · 只显示该分组内的挂载</p>
+        <div class="mount-list">
+          <article class="mount-item" v-for="m in visibleMounts()" :key="m.mount_id">
+            <div class="mount-top">
+              <span class="badge kind">{{ kindLabel(m.kind) }}</span>
+              <strong>{{ m.path }}</strong>
+              <span class="mount-count">{{ m.docs }} 篇</span>
+            </div>
+            <div class="mount-actions">
+              <button class="btn small" @click="filterMount(m)">{{ docsFilter.mountId === m.mount_id ? '取消筛选' : '筛选文档' }}</button>
+              <button class="btn small danger" @click="removeMount(m.mount_id)">移除</button>
+            </div>
+          </article>
+          <div v-if="!visibleMounts().length" class="empty-inline">
+            {{ activeGroup ? '该分组还没有挂载；在右侧分组详情里归入挂载。' : '还没有挂载，点「＋ 添加」挂载笔记目录/文件/Obsidian 库/思源工作区。' }}
+          </div>
+        </div>
+      </section>
 
-      <!-- 排除面板（三类规则 + 双列表，观察-1） -->
-      <div class="panel wide">
+      <section class="notes-col docs-col panel">
+        <div class="col-head docs-head">
+          <div><div class="eyebrow">DOCUMENTS</div><h3>文档浏览 <span class="muted small">{{ docs.length }} 条</span></h3></div>
+        </div>
+        <div class="doc-filters">
+          <select v-model="docsFilter.mountId" @change="loadDocs">
+            <option value="">全部挂载</option>
+            <option v-for="m in mounts" :key="m.mount_id" :value="m.mount_id">{{ m.kind }} · {{ m.path }}</option>
+          </select>
+          <select v-model="docsFilter.groupId" @change="onDocsGroupFilter">
+            <option value="">全部分组</option>
+            <option v-for="g in groups" :key="g.group_id" :value="g.group_id">组：{{ g.name }}</option>
+          </select>
+        </div>
+        <div class="doc-scroll">
+          <article class="doc-item" v-for="d in docs.slice(0, 200)" :key="d.doc_id">
+            <div class="doc-main">
+              <span class="badge">{{ d.format }}</span>
+              <span class="badge status" :class="'st-' + d.status">{{ statusLabel(d.status) }}</span>
+              <strong>{{ d.title }}</strong>
+              <span class="doc-path">{{ d.rel_path }}</span>
+              <div class="doc-actions">
+                <button class="btn small" @click="toggleDocPreview(d)">{{ d.previewOpen ? '收起' : '预览' }}</button>
+                <button class="btn small" @click="openLocation(d.doc_id)">位置</button>
+                <button class="btn small" @click="openFile(d)">打开</button>
+              </div>
+            </div>
+            <div v-if="d.previewOpen" class="preview md-preview" v-html="renderMarkdown(d.preview || '加载中…')"></div>
+          </article>
+          <div v-if="!docs.length" class="empty-inline">暂无文档；索引完成后这里会自动出现。</div>
+        </div>
+      </section>
+    </section>
+
+      <div class="panel wide exclude-panel">
         <h3>排除规则 <button class="btn small" @click="ruleAddOpen = !ruleAddOpen">＋ 添加</button></h3>
         <p class="muted small" v-if="stats.excluded_by_reason">
           排除构成：默认规则 {{ stats.excluded_by_reason.default }} ·
@@ -223,39 +278,12 @@
       </div>
 
       <!-- 文档列表与只读预览 -->
-      <div class="panel wide">
-        <h3>文档浏览
-          <select v-model="docsFilter.mountId" @change="loadDocs">
-            <option value="">全部挂载</option>
-            <option v-for="m in mounts" :key="m.mount_id" :value="m.mount_id">{{ m.kind }} · {{ m.path }}</option>
-          </select>
-          <select v-model="docsFilter.groupId" @change="loadDocs">
-            <option value="">全部文档</option>
-            <option v-for="g in groups" :key="g.group_id" :value="g.group_id">组：{{ g.name }}</option>
-          </select>
-          <span class="muted small">共 {{ docs.length }} 条（{{ docsStatusCount }}）</span>
-        </h3>
-        <ul class="doc-list">
-          <li v-for="d in docs.slice(0, 100)" :key="d.doc_id" class="doc-row">
-            <span class="badge">{{ d.format }}</span>
-            <span class="badge status" :class="'st-' + d.status">{{ statusLabel(d.status) }}</span>
-            <strong>{{ d.title }}</strong>
-            <span class="muted small">{{ d.rel_path }}</span>
-            <button class="btn small" @click="toggleDocPreview(d)">{{ d.previewOpen ? '收起' : '预览' }}</button>
-            <button class="btn small" @click="openLocation(d.doc_id)">打开所在位置</button>
-            <button class="btn small" @click="openFile(d)">直接打开</button>
-            <div v-if="d.previewOpen" class="preview md-preview" v-html="renderMarkdown(d.preview || '加载中…')"></div>
-          </li>
-          <li v-if="!docs.length" class="muted small">暂无文档（索引完成前先等待；状态徽标会实时更新）</li>
-        </ul>
-      </div>
-    </section>
 
     <p v-if="errorMsg" class="warn">{{ errorMsg }}</p>
   </main>
 
   <!-- 随手问（M4/M5）：广播问答 + 可选 AI 综合（不再单独设 AI 栏目） -->
-  <main v-if="page === 'ask'">
+  <main v-if="page === 'ask'" class="ask-page">
     <header class="page-head compact">
       <div class="page-title">
         <div class="eyebrow"><span class="eyebrow-dot"></span> COLLABORATION / 广播问答</div>
@@ -316,11 +344,20 @@
             <div v-if="askSending" class="muted small">{{ askProgress || '正在收集同事回答…' }}</div>
             <p v-if="askError" class="warn">{{ askError }}</p>
           </div>
-          <div class="ask-groups-row">
-            <span class="muted small">提问组：</span>
-            <label v-for="g in relayGroups" :key="g" class="muted small">
-              <input type="checkbox" :value="g" v-model="askGroupsSel" @change="askGroupsTouched = true"> {{ g }}
-            </label>
+          <div class="ask-group-dock">
+            <div class="ask-group-bar">
+              <span class="dock-label">提问组</span>
+              <span v-for="g in askGroupsSel" :key="g" class="badge kind">{{ g }}</span>
+              <span v-if="!askGroupsSel.length" class="muted small">未选择（首问需要至少一个组）</span>
+              <button class="btn small dock-toggle" @click="askGroupsOpen = !askGroupsOpen">{{ askGroupsOpen ? '收起' : '管理提问组' }} · {{ relayGroupInfo.length }}</button>
+            </div>
+            <div v-if="askGroupsOpen" class="ask-group-panel">
+              <label v-for="g in relayGroupInfo" :key="g.name" class="ask-group-option">
+                <input type="checkbox" :value="g.name" v-model="askGroupsSel" @change="askGroupsTouched = true">
+                <span class="ask-group-text"><strong>{{ g.name }}</strong><small>{{ g.description || '（暂无描述）' }} · 在线 {{ g.online || 0 }} 人</small></span>
+              </label>
+              <div v-if="!relayGroupInfo.length" class="muted small" style="padding:8px">还没有组，先在设置里建组。</div>
+            </div>
           </div>
           <div class="chat-input-row">
             <textarea v-model="askInput" rows="2" :placeholder="askHasTurns() ? '继续追问（基于上一轮结果）' : '输入问题，首问广播给在线同事'" @keydown.enter.exact.prevent="sendAsk"></textarea>

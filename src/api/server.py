@@ -39,7 +39,7 @@ UI_DIR = _resolve_ui_dir()
 #   - 页脚版本展示
 #   - /api/health 的 version 字段
 # 任何 UI 改动必须 bump 此值，否则用户浏览器仍可能命中旧缓存。
-APP_VERSION = "0.8.4"
+APP_VERSION = "0.8.7"
 
 # 健康检查路径：公开（不含知识内容）
 PUBLIC_PATHS = {"/api/health", "/"}

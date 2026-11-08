@@ -56,6 +56,7 @@ createApp({
       askResultsWidth: parseInt(localStorage.getItem("chisel_ask_results_w") || "340", 10) || 340,
       askSummarizing: false,
       askAutoSummary: localStorage.getItem("chisel_ask_auto_summary") !== "0",
+      askGroupsOpen: false,
       followupText: "",
       followupBusy: false,
       // M8 AI 会话
@@ -975,7 +976,11 @@ createApp({
         if (String(e.message) !== "need token") this.errorMsg = String(e.message || e);
       }
       this.loadDocs();
-      if (this.activeGroup) this.loadGroupDetail(this.activeGroup.group_id);
+      if (this.activeGroup) {
+        const still = this.groups.find((g) => g.group_id === this.activeGroup.group_id);
+        if (!still) { this.activeGroup = null; this.docsFilter.groupId = ""; this.groupMembers = []; }
+        else { this.activeGroup = still; this.loadGroupDetail(still.group_id); }
+      }
     },
     async loadDocs() {
       try {
@@ -1014,9 +1019,33 @@ createApp({
       try {
         await this.api("/api/groups/" + g.group_id, { method: "DELETE" });
         if (this.docsFilter.groupId === g.group_id) this.docsFilter.groupId = "";
-        if (this.activeGroup && this.activeGroup.group_id === g.group_id) this.activeGroup = null;
+        if (this.activeGroup && this.activeGroup.group_id === g.group_id) { this.activeGroup = null; this.groupMembers = []; }
         this.refresh();
       } catch (e) { this.errorMsg = String(e.message || e); }
+    },
+    selectGroup(g) {
+      this.activeGroup = g;
+      this.docsFilter.groupId = g ? g.group_id : "";
+      this.docsFilter.mountId = "";
+      this.groupMembers = [];
+      if (g) this.loadGroupDetail(g.group_id);
+      this.loadDocs();
+    },
+    visibleMounts() {
+      if (!this.activeGroup) return this.mounts;
+      const ids = new Set((this.groupMembers || []).map((m) => Number(m.mount_id)));
+      return this.mounts.filter((m) => ids.has(Number(m.mount_id)));
+    },
+    filterMount(m) {
+      this.docsFilter.mountId = this.docsFilter.mountId === m.mount_id ? "" : m.mount_id;
+      this.loadDocs();
+    },
+    onDocsGroupFilter() {
+      const g = this.groups.find((x) => x.group_id === this.docsFilter.groupId) || null;
+      this.activeGroup = g;
+      this.groupMembers = [];
+      if (g) this.loadGroupDetail(g.group_id);
+      this.loadDocs();
     },
     toggleGroupFilter(g) {
       this.docsFilter.groupId = this.docsFilter.groupId === g.group_id ? "" : g.group_id;
