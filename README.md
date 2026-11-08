@@ -161,6 +161,7 @@ models/       本地向量/重排模型（不提交 Git）
 - 重排：[docs/design/p1-rerank-design.md](docs/design/p1-rerank-design.md)
 - 查询改写：[docs/design/p2-query-rewrite.md](docs/design/p2-query-rewrite.md)
 - 向量后端：[docs/design/p3-vector-backend.md](docs/design/p3-vector-backend.md)
+- UI 设计系统：[docs/design/ui-refresh.md](docs/design/ui-refresh.md)
 - 验收报告：[docs/review/](docs/review/)
 - 未完成事项：[docs/planning/open-items.md](docs/planning/open-items.md)
 

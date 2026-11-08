@@ -3,7 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>凿壁 ChiselWall · 随手记</title>
+  <title>凿壁 ChiselWall · 知识工作台</title>
+  <meta name="theme-color" content="#070a10">
+  <script>try{document.documentElement.dataset.theme=localStorage.getItem("chisel_theme")||"dark";}catch(e){document.documentElement.dataset.theme="dark";}</script>
   <!-- __CHISEL_VERSION__ 由服务端注入：?v= 破坏浏览器旧缓存（M2-FIX5） -->
   <link rel="stylesheet" href="style.css?v=__CHISEL_VERSION__">
   <!-- Vue3 本地内置（F5：不再依赖 CDN，内网可用；无构建工具形态保留） -->
@@ -11,34 +13,68 @@
 </head>
 <body>
 <div id="app" v-cloak>
-  <aside class="sidebar">
-    <div class="logo">凿壁 <span>ChiselWall</span></div>
-    <nav>
-      <div class="nav-item" :class="{ active: page === 'notes' }" @click="page = 'notes'">随手记</div>
-      <div class="nav-item" :class="{ active: page === 'ask' }" @click="switchPage('ask')">随手问</div>
-      <div class="nav-item" :class="{ active: page === 'settings' }" @click="switchPage('settings')">设置</div>
+  <aside class="rail">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none"><path d="M4.5 19.5 19.5 4.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M9 4.5h10.5V15" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div class="brand-text"><strong>凿壁</strong><span>ChiselWall</span></div>
+    </div>
+    <div class="nav-label">工作区</div>
+    <nav class="nav">
+      <button class="nav-item" :class="{ active: page === 'notes' }" @click="switchPage('notes')">
+        <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M5 4.5h11.5A2.5 2.5 0 0 1 19 7v12.5H7.5A2.5 2.5 0 0 1 5 17V4.5Z" stroke="currentColor" stroke-width="1.7"/><path d="M8.5 8h6M8.5 11.5h6M8.5 15h4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></span>
+        <span class="nav-text">随手记</span>
+      </button>
+      <button class="nav-item" :class="{ active: page === 'ask' }" @click="switchPage('ask')">
+        <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M20.5 11.5a7.5 7.5 0 0 1-8 7.5H5l2.1-2.6A7.5 7.5 0 1 1 20.5 11.5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M8.5 11h.01M12 11h.01M15.5 11h.01" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg></span>
+        <span class="nav-text">随手问</span>
+      </button>
+      <button class="nav-item" :class="{ active: page === 'settings' }" @click="switchPage('settings')">
+        <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M4 7h9M17 7h3M4 17h3M11 17h9" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="15" cy="7" r="2.2" stroke="currentColor" stroke-width="1.7"/><circle cx="9" cy="17" r="2.2" stroke="currentColor" stroke-width="1.7"/></svg></span>
+        <span class="nav-text">设置</span>
+      </button>
     </nav>
-    <div class="foot">知识留本机 · 中心只路由 <span class="ver">v__CHISEL_VERSION__</span></div>
+    <div class="rail-spacer"></div>
+    <div class="rail-status">
+      <span class="status-dot" :class="{ online: relay.connected }"></span>
+      <div class="rail-status-text"><strong>{{ relay.connected ? 'Relay 在线' : 'Relay 离线' }}</strong><span>{{ relay.nick || '未设置昵称' }}</span></div>
+    </div>
+    <div class="rail-footer">
+      <button class="icon-btn" @click="toggleTheme" :title="theme === 'dark' ? '切换浅色' : '切换深色'">
+        <svg v-if="theme === 'dark'" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="1.7"/><path d="M12 2.5v2M12 19.5v2M4.6 4.6l1.4 1.4M18 18l1.4 1.4M2.5 12h2M19.5 12h2M4.6 19.4 6 18M18 6l1.4-1.4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+        <svg v-else viewBox="0 0 24 24" fill="none"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+      </button>
+      <span class="ver">v__CHISEL_VERSION__</span>
+    </div>
   </aside>
 
   <main v-if="page === 'notes'">
-    <!-- 顶栏统计（纯文本观感，FIX2）+ 重建索引 -->
-    <header class="topbar">
-      <p class="stats" aria-label="索引进度统计">
-        已索引 <b>{{ stats.indexed }}</b> ·
-        待处理 <b>{{ stats.pending }}</b> ·
-        失败 <b class="warn">{{ stats.error }}</b> ·
-        排除 <b>{{ stats.excluded }}</b> ·
-        挂载 <b>{{ stats.mounts }}</b>
-      </p>
-      <button class="btn" @click="reindex">重建索引</button>
+    <header class="page-head">
+      <div class="page-title">
+        <div class="eyebrow"><span class="eyebrow-dot"></span> LOCAL KNOWLEDGE / 本机知识库</div>
+        <h1>随手记</h1>
+        <p>只索引，不复制。你的文件始终留在原处；搜索自己的知识，也可以让同事的笔记参与。</p>
+      </div>
+      <div class="page-actions">
+        <div class="conn-pill" :class="{ online: relay.connected }"><span class="status-dot" :class="{ online: relay.connected }"></span>{{ relay.connected ? 'Relay 在线' : 'Relay 离线' }}</div>
+        <button class="btn ghost" @click="reindex"><svg viewBox="0 0 24 24" fill="none" class="btn-icon"><path d="M20 11a8 8 0 1 0-2.3 6.3M20 5v6h-6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>重建索引</button>
+      </div>
     </header>
 
-    <!-- 搜索 -->
-    <section class="search-box">
-      <input v-model.trim="query" placeholder="搜索本机知识（中文分词 / 关键词，回车提交）"
-             @keyup.enter="doSearch">
-      <button class="btn primary" @click="doSearch" :disabled="busy">搜索</button>
+    <div class="stat-strip" aria-label="索引进度统计">
+      <div class="stat-card"><span class="stat-label">已索引</span><strong class="stat-value">{{ stats.indexed }}</strong><span class="stat-meta">篇文档</span></div>
+      <div class="stat-card"><span class="stat-label">待处理</span><strong class="stat-value">{{ stats.pending }}</strong><span class="stat-meta">队列中</span></div>
+      <div class="stat-card" :class="{ danger: stats.error > 0 }"><span class="stat-label">失败</span><strong class="stat-value">{{ stats.error }}</strong><span class="stat-meta">需检查</span></div>
+      <div class="stat-card"><span class="stat-label">排除</span><strong class="stat-value">{{ stats.excluded }}</strong><span class="stat-meta">规则过滤</span></div>
+      <div class="stat-card"><span class="stat-label">挂载</span><strong class="stat-value">{{ stats.mounts }}</strong><span class="stat-meta">个来源</span></div>
+    </div>
+
+    <section class="search-shell">
+      <span class="search-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="6.5" stroke="currentColor" stroke-width="1.7"/><path d="m16 16 4.5 4.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></span>
+      <input v-model.trim="query" placeholder="搜索本机知识：文件锁、cgroup、进程参数…" aria-label="搜索本机知识" @keyup.enter="doSearch">
+      <kbd class="search-kbd">Enter</kbd>
+      <button class="btn primary" @click="doSearch" :disabled="busy">{{ busy ? '搜索中…' : '搜索' }}</button>
     </section>
     <section class="results" v-if="searched">
       <div class="muted small">{{ hits.length ? '命中 ' + hits.length + ' 条（topk）' : '没有命中，试试换关键词' }}</div>
@@ -77,6 +113,10 @@
       </details>
     </section>
 
+    <div class="section-head">
+      <div><div class="eyebrow">WORKSPACE / 工作区</div><h2>知识源与文档</h2></div>
+      <span class="section-desc">挂载 · 分组 · 排除 · 文档浏览</span>
+    </div>
     <section class="panels">
       <!-- 笔记分组（§15.6 / GR-07） -->
       <div class="panel">
@@ -142,7 +182,7 @@
       </div>
 
       <!-- 排除面板（三类规则 + 双列表，观察-1） -->
-      <div class="panel">
+      <div class="panel wide">
         <h3>排除规则 <button class="btn small" @click="ruleAddOpen = !ruleAddOpen">＋ 添加</button></h3>
         <p class="muted small" v-if="stats.excluded_by_reason">
           排除构成：默认规则 {{ stats.excluded_by_reason.default }} ·
@@ -216,9 +256,15 @@
 
   <!-- 随手问（M4/M5）：广播问答 + 可选 AI 综合（不再单独设 AI 栏目） -->
   <main v-if="page === 'ask'">
-    <header class="topbar">
-      <p class="stats">随手问 · 首问广播给在线同事，追问基于上一轮结果（不重新广播）</p>
-      <span class="badge" :class="relay.connected ? 'route-main' : ''">{{ relay.connected ? '已连接' : '未连接' }}</span>
+    <header class="page-head compact">
+      <div class="page-title">
+        <div class="eyebrow"><span class="eyebrow-dot"></span> COLLABORATION / 广播问答</div>
+        <h1>随手问 <span class="head-tail">会话</span></h1>
+        <p>首问广播给在线同事；同一会话的后续追问沿用上一轮结果，不重复打扰。</p>
+      </div>
+      <div class="page-actions">
+        <div class="conn-pill" :class="{ online: relay.connected }"><span class="status-dot" :class="{ online: relay.connected }"></span>{{ relay.connected ? '已连接 · ' + (relay.online ? relay.online.length : 0) + ' 人在线' : '未连接' }}</div>
+      </div>
     </header>
     <section class="chat-layout" :style="{ '--ask-results-w': askResultsWidth + 'px' }">
       <aside class="chat-sessions">
@@ -234,7 +280,12 @@
         </div>
       </aside>
       <div class="chat-main">
-        <div v-if="!askSession" class="muted" style="padding:24px">新建或选择左侧会话；第一条问题会广播给在线同事。</div>
+        <div v-if="!askSession" class="empty-state">
+          <div class="empty-icon"><svg viewBox="0 0 24 24" fill="none"><path d="M20.5 11.5a7.5 7.5 0 0 1-8 7.5H5l2.1-2.6A7.5 7.5 0 1 1 20.5 11.5Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M8.5 11h.01M12 11h.01M15.5 11h.01" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg></div>
+          <h3>向同事的知识库借一束光</h3>
+          <p>新建会话后输入问题，首问会广播给在线同事；之后的追问沿用上一轮结果。</p>
+          <button class="btn primary" @click="newAskSession">新建会话</button>
+        </div>
         <template v-else>
           <div class="chat-toolbar">
             <strong>{{ askSession.title }}</strong>
@@ -291,7 +342,10 @@
           <span v-for="a in (askLatestPayload().answers || [])" :key="a.node" class="badge kind">@{{ a.node }} {{ a.elapsed_ms }}ms · {{ a.hit_count }} 条</span>
         </div>
         <div class="ask-results-scroll">
-          <div v-if="!askLatestHits().length" class="muted small">本轮还没有结果。</div>
+          <div v-if="!askLatestHits().length" class="empty-state compact">
+            <div class="empty-icon"><svg viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="6.5" stroke="currentColor" stroke-width="1.7"/><path d="m16 16 4.5 4.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></div>
+            <p>提问后，这里会先出现搜索结果。</p>
+          </div>
           <article class="hit" v-for="(h, i) in askLatestHits()" :key="i">
             <header>
               <strong>{{ h.title }}</strong>
@@ -322,9 +376,24 @@
 
   <!-- 设置页（M6 占位，只读说明） -->
   <main v-if="page === 'settings'">
-    <header class="topbar"><p class="stats">设置（M6 打包分发起实现，此处为占位）</p></header>
-    <section class="panels">
-      <div class="panel wide">
+    <header class="page-head">
+      <div class="page-title">
+        <div class="eyebrow"><span class="eyebrow-dot"></span> SYSTEM / 连接与能力</div>
+        <h1>设置</h1>
+        <p>所有配置只保存在本机；AI key、token 与模型路径不会上传到中心。</p>
+      </div>
+    </header>
+    <section class="settings-layout">
+      <nav class="settings-nav" aria-label="设置分区">
+        <a href="#set-relay">Relay 连接</a>
+        <a href="#set-ai">AI 配置</a>
+        <a href="#set-vector">语义搜索</a>
+        <a href="#set-rerank">重排 rerank</a>
+        <a href="#set-query">查询改写</a>
+        <a href="#set-limits">限流与预算</a>
+      </nav>
+      <section class="panels">
+      <div class="panel wide" id="set-relay">
         <h3>Relay 连接</h3>
         <p class="muted small">中心只路由、不存知识。地址/昵称/token 由管理员发放；保存后自动重连。</p>
         <div class="row"><input v-model="relayForm.relay_url" placeholder="ws://中心IP:18760/ws"></div>
@@ -350,7 +419,7 @@
           <button class="btn primary" @click="saveRelayConfig" :disabled="relaySaving">{{ relaySaving ? '保存中…' : '保存并连接' }}</button>
         </div>
       </div>
-      <div class="panel wide">
+      <div class="panel wide" id="set-ai">
         <h3>AI 配置（OpenAI 兼容）</h3>
         <p class="muted small">支持 DeepSeek API、公司内网模型、Ollama（/v1 端点）。保存后立即生效；key 只保存在本机配置目录。</p>
         <div class="row"><input v-model="aiForm.base_url" placeholder="base_url，如 https://api.deepseek.com 或 http://内网IP:8000/v1"></div>
@@ -383,7 +452,7 @@
           <button class="btn small" @click="copyAIError">复制错误信息</button>
         </div>
       </div>
-      <div class="panel wide">
+      <div class="panel wide" id="set-vector">
         <h3>语义搜索（向量混合，可选）</h3>
         <p class="muted small">默认关。开启后关键词 + 向量混合检索；模型在本地（约 23MB）或内网 /embeddings。索引期会占用少量 CPU。</p>
         <div class="row">
@@ -412,7 +481,7 @@
           <span class="muted small">{{ vector.error || '' }}</span>
         </div>
       </div>
-      <div class="panel wide">
+      <div class="panel wide" id="set-rerank">
         <h3>重排 rerank（可选，提问端精排）</h3>
         <p class="muted small">对候选做一次 cross-encoder 精排，提升前几条相关性；失败/超时自动回退关键词+向量排序。被搜索端不参与。</p>
         <div class="row">
@@ -447,13 +516,13 @@
         </div>
         <p v-if="rerankError" class="warn">{{ rerankError }} <button class="btn small" @click="copyText(rerankError)">复制</button></p>
       </div>
-      <div class="panel wide">
+      <div class="panel wide" id="set-query">
         <h3>查询改写（P2，可选）</h3>
         <p class="muted small">用已配置的 AI 从问题中提取 1–3 个检索式，提升同义/换个说法的召回；只影响本机搜索与随手问的本机回答。失败/超时自动回退原查询。</p>
         <div class="row">
           <label class="muted small"><input type="checkbox" v-model="queryForm.enabled"> 启用查询改写</label>
           <input v-model.number="queryForm.max_queries" type="number" min="1" max="5" style="max-width:110px" placeholder="最多改写数">
-          <span class="badge" :class="query.ready ? 'route-main' : ''">{{ query.ready ? '已就绪' : (query.ai_ready ? '未启用' : '需先配置 AI') }}</span>
+          <span class="badge" :class="queryCfg.ready ? 'route-main' : ''">{{ queryCfg.ready ? '已就绪' : (queryCfg.ai_ready ? '未启用' : '需先配置 AI') }}</span>
           <button class="btn" @click="saveQueryConfig" :disabled="querySaving">{{ querySaving ? '保存中…' : '保存' }}</button>
         </div>
         <p class="muted small">改写提示词（可自定义；清空则恢复默认）</p>
@@ -463,7 +532,8 @@
           <span class="muted small">修改后保存即生效；下一次改写使用新提示词。</span>
         </div>
       </div>
-      <div class="panel"><h3>限流参数</h3><p class="muted small">每来源 1 问/5s、查询预算 800ms、top-k=8 —— M4 随广播问答生效。</p></div>
+      <div class="panel" id="set-limits"><h3>限流参数</h3><p class="muted small">每来源 1 问/5s、查询预算 800ms、top-k=8 —— M4 随广播问答生效。</p></div>
+      </section>
     </section>
   </main>
 

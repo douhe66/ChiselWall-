@@ -5,6 +5,7 @@ createApp({
   data() {
     return {
       page: "notes",
+      theme: localStorage.getItem("chisel_theme") || "dark",
       query: "",
       hits: [],
       searched: false,
@@ -77,7 +78,7 @@ createApp({
       rerankSaving: false,
       rerankTesting: false,
       rerankError: "",
-      query: { ready: false, ai_ready: false, enabled: false, max_queries: 3 },
+      queryCfg: { ready: false, ai_ready: false, enabled: false, max_queries: 3 },
       queryForm: { enabled: false, max_queries: 3, timeout_s: 4, system_prompt: "" },
       querySaving: false,
       aiSummary: localStorage.getItem("chisel_ai_summary") !== "0",
@@ -150,6 +151,21 @@ createApp({
         throw new Error(detail || res.statusText);
       }
       return res.json();
+    },
+    applyTheme() {
+      document.documentElement.dataset.theme = this.theme;
+    },
+    toggleTheme() {
+      this.theme = this.theme === "dark" ? "light" : "dark";
+      localStorage.setItem("chisel_theme", this.theme);
+      this.applyTheme();
+    },
+    focusSearch() {
+      if (this.page !== "notes") this.page = "notes";
+      this.$nextTick(() => {
+        const el = document.querySelector(".search-shell input");
+        if (el) el.focus();
+      });
     },
     switchPage(page) {
       this.page = page;
@@ -264,6 +280,7 @@ createApp({
       try {
         const r = await this.api("/api/ask-sessions/" + this.askSession.id + "/summarize", { method: "POST" });
         this.askTurns = r.turns || [];
+        this.scrollChat();
         if (r.answer && r.answer.status && r.answer.status !== "ready") {
           this.showToast(r.answer.error || "AI 未就绪", "error");
         }
@@ -308,12 +325,19 @@ createApp({
         this.showToast("新建会话失败：" + (e.message || e), "error");
       }
     },
+    scrollChat() {
+      this.$nextTick(() => {
+        const el = document.querySelector(".chat-messages");
+        if (el) el.scrollTop = el.scrollHeight;
+      });
+    },
     async openAskSession(id) {
       try {
         const r = await this.api("/api/ask-sessions/" + id);
         this.askSession = r.session;
         this.askTurns = r.turns || [];
         this.askError = "";
+        this.scrollChat();
       } catch (e) {
         this.showToast("打开会话失败：" + (e.message || e), "error");
       }
@@ -381,6 +405,7 @@ createApp({
           });
           this.askTurns = r.turns || [];
           this.askInput = "";
+          this.scrollChat();
           await this.loadAskSessions();
           this.askSending = false;
           if (!this.askAutoSummary) this.showToast("已记录追问；点「AI 综合」生成回答", "info");
@@ -405,6 +430,7 @@ createApp({
               method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ turn_id: turnId, qid }),
             });
             this.askTurns = r.turns || [];
+            this.scrollChat();
             await this.loadAskSessions();
             if (this.askAutoSummary) {
               this.askProgress = "AI 综合中…";
@@ -652,12 +678,12 @@ createApp({
     },
     async loadQuery() {
       try {
-        this.query = await this.api("/api/query/config");
+        this.queryCfg = await this.api("/api/query/config");
         this.queryForm = {
-          enabled: !!this.query.enabled,
-          max_queries: this.query.max_queries || 3,
-          timeout_s: this.query.timeout_s || 4,
-          system_prompt: this.query.system_prompt || this.query.default_prompt || "",
+          enabled: !!this.queryCfg.enabled,
+          max_queries: this.queryCfg.max_queries || 3,
+          timeout_s: this.queryCfg.timeout_s || 4,
+          system_prompt: this.queryCfg.system_prompt || this.queryCfg.default_prompt || "",
         };
       } catch (e) {
         // 不阻断页面
@@ -667,7 +693,7 @@ createApp({
       if (this.querySaving) return;
       this.querySaving = true;
       try {
-        this.query = await this.api("/api/query/config", {
+        this.queryCfg = await this.api("/api/query/config", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -677,7 +703,7 @@ createApp({
             system_prompt: this.queryForm.system_prompt || "",
           }),
         });
-        this.showToast(this.query.ready ? "查询改写已启用" : "已保存（需要 AI 配置/启用）", "info");
+        this.showToast(this.queryCfg.ready ? "查询改写已启用" : "已保存（需要 AI 配置/启用）", "info");
       } catch (e) {
         this.showToast("保存失败：" + (e.message || e), "error");
       } finally {
@@ -685,7 +711,7 @@ createApp({
       }
     },
     resetQueryPrompt() {
-      this.queryForm.system_prompt = this.query.default_prompt || "";
+      this.queryForm.system_prompt = this.queryCfg.default_prompt || "";
     },
     async loadAI() {
       try {
@@ -1134,6 +1160,13 @@ createApp({
     },
   },
   mounted() {
+    this.applyTheme();
+    window.addEventListener("keydown", (e) => {
+      if ((e.ctrlKey || e.metaKey) && String(e.key).toLowerCase() === "k") {
+        e.preventDefault();
+        this.focusSearch();
+      }
+    });
     this.refresh();
     this.loadRelay();
     this.loadAI();
