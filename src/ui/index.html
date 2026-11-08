@@ -54,7 +54,7 @@
       <div class="page-title">
         <div class="eyebrow"><span class="eyebrow-dot"></span> LOCAL KNOWLEDGE / 本机知识库</div>
         <h1>随手记</h1>
-        <p>只索引，不复制。你的文件始终留在原处；搜索自己的知识，也可以让同事的笔记参与。</p>
+        <p>挂载你的笔记，分享给他人。你的文件始终留在原处，不改变你的笔记记录习惯。</p>
       </div>
       <div class="page-actions">
         <div class="conn-pill" :class="{ online: relay.connected }"><span class="status-dot" :class="{ online: relay.connected }"></span>{{ relay.connected ? 'Relay 在线' : 'Relay 离线' }}</div>
@@ -288,7 +288,7 @@
       <div class="page-title">
         <div class="eyebrow"><span class="eyebrow-dot"></span> COLLABORATION / 广播问答</div>
         <h1>随手问 <span class="head-tail">会话</span></h1>
-        <p>首问广播给在线同事；同一会话的后续追问沿用上一轮结果，不重复打扰。</p>
+        <p>问别人，搜自己。</p>
       </div>
       <div class="page-actions">
         <div class="conn-pill" :class="{ online: relay.connected }"><span class="status-dot" :class="{ online: relay.connected }"></span>{{ relay.connected ? '已连接 · ' + (relay.online ? relay.online.length : 0) + ' 人在线' : '未连接' }}</div>
