@@ -52,7 +52,7 @@
 要求：Python 3.12+，Windows 或 Linux。
 
 ```bash
-git clone <your-repo-url> chiselwall
+git clone https://github.com/douhe66/ChiselWall-.git chiselwall
 cd chiselwall
 python -m venv .venv
 # Windows: .venv\Scripts\activate
@@ -216,7 +216,7 @@ The relay handles presence, groups, broadcast, rate limiting, answer routing, an
 Requires Python 3.12+ (Windows or Linux).
 
 ```bash
-git clone <your-repo-url> chiselwall
+git clone https://github.com/douhe66/ChiselWall-.git chiselwall
 cd chiselwall
 python -m venv .venv
 # Windows: .venv\Scripts\activate
