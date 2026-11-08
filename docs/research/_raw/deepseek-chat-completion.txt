@@ -1,0 +1,721 @@
+跳到主要内容
+Search / Fetch API 已上线，使用自研搜索引擎，支持网页搜索与抓取，点此查看使用指南
+DeepSeek API 文档
+ctrl
+K
+更多资源
+中文（中国）
+开放平台
+快速开始
+API 指南
+API 文档
+新闻
+更新日志
+Chat Completions API
+Responses API
+Messages API
+FIM 补全 API（Beta）
+获取模型列表
+查询余额
+文件（Files）
+上传文件
+列出文件
+查询文件
+删除文件
+网页搜索与抓取
+网页搜索
+网页抓取
+Chat Completions API
+复制 Markdown
+POST
+https://api.deepseek.com/chat/completions
+
+根据输入的上下文，来让模型补全对话内容。
+
+Request​
+APPLICATION/JSON
+
+BODY
+
+REQUIRED
+
+messages
+
+object[]
+
+REQUIRED
+
+最少元素数： 1
+
+对话的消息列表。
+
+Array [
+
+oneOf
+
+System message
+User message
+Assistant message
+Tool message
+content
+string
+REQUIRED
+
+system 消息的内容。
+
+role
+string
+REQUIRED
+
+Possible values: system
+
+该消息的发起角色，其值为 system。
+
+name
+string
+
+可以选填的参与者的名称，为模型提供信息以区分相同角色的参与者。
+
+]
+
+model
+string
+REQUIRED
+
+Possible values: deepseek-flash, deepseek-v4-pro
+
+使用的模型的 ID。请使用 deepseek-flash 或 deepseek-v4-pro。
+
+thinking
+
+object
+
+NULLABLE
+
+控制思考模式与非思考模式的转换。省略 thinking 或传 null 时，模式由 reasoning_effort 决定；如果 reasoning_effort 也未提供，则默认开启思考模式。提供此对象时，type 必填，其模式设置优先于 reasoning_effort。
+
+type
+string
+REQUIRED
+
+Possible values: enabled, disabled
+
+如果设为 enabled，则使用思考模式。如果设为 disabled，则使用非思考模式
+
+reasoning_effort
+string
+
+Possible values: none, low, high, max
+
+控制思考模式开关与思考强度。none 关闭思考模式；low / high / max 开启思考模式。默认强度为 high。出于兼容考虑，minimal 映射为 low，medium / xhigh 映射为 high。
+
+max_tokens
+integer
+NULLABLE
+
+限制一次请求中模型生成 completion 的最大 token 数。取值范围为 1 到 384K（393216）。未设置时，非思考模式默认 8K，思考模式默认 64K（reasoning_effort 为 max 时为 128K）。输入 token 和输出 token 的总长度受模型的上下文长度的限制。详见模型 & 价格。
+
+response_format
+
+object
+
+NULLABLE
+
+一个 object，指定模型必须输出的格式。省略或传 null 时使用普通文本；提供此对象时，type 必填。
+
+设置为 { "type": "json_object" } 以启用 JSON 模式，该模式保证模型生成的消息是有效的 JSON。
+
+注意: 使用 JSON 模式时，你还必须通过系统或用户消息指示模型生成 JSON。如果模型的输出无法被识别为 JSON，API 会将其中的非 JSON 内容替换为空格（U+0020），因此返回的消息内容可能仅包含空格（看起来为空，此时 finish_reason 仍可能是 stop）。此外，如果 finish_reason="length"，这表示生成超过了 max_tokens 或对话超过了最大上下文长度，消息内容可能会被部分截断。
+
+type
+string
+REQUIRED
+
+Possible values: text, json_object
+
+必须是 text 或 json_object。
+
+stop
+string | string[]
+
+NULLABLE
+
+Default value: null
+
+一个 string 或最多包含 16 个 string 的 list，在遇到这些词时，API 将停止生成更多的 token。
+
+oneOf
+
+Single stop sequence
+Stop sequence list
+
+string
+
+stream
+boolean
+NULLABLE
+
+Default value: false
+
+如果设置为 true，将会以 SSE（server-sent events）的形式以流式发送消息增量。消息流以 data: [DONE] 结尾。
+
+stream_options
+
+object
+
+NULLABLE
+
+Default value: null
+
+流式输出相关选项。必须与 stream: true 一起使用；如果 stream 未设置为 true，API 会返回 400 错误。
+
+include_usage
+boolean
+
+如果设置为 true，流式返回的所有块都会包含 usage 字段，其中除最后一个块外，该字段的值均为 null。如果不设置或设置为 false，则除最后一个块外，其余块都不含 usage 字段。
+
+无论是否设置，data: [DONE] 之前的最后一个块都会在其 usage 字段中给出整个请求的 token 使用统计信息。请注意，这里不会单独下发一个只含 usage 的块：统计信息附加在最后一个内容块上，该块的 choices 数组始终只包含一个元素，其中不含新增内容且 finish_reason 非 null。
+
+temperature
+number
+NULLABLE
+
+Possible values: >= 0 and <= 2
+
+Default value: 1
+
+采样温度，介于 0 和 2 之间。更高的值，如 0.8，会使输出更随机，而更低的值，如 0.2，会使其更加集中和确定。 我们通常建议可以更改这个值或者更改 top_p，但不建议同时对两者进行修改。思考模式下不生效。
+
+top_p
+number
+NULLABLE
+
+Possible values: > 0 and <= 1
+
+作为调节采样温度的替代方案，模型会考虑前 top_p 概率的 token 的结果。所以 0.1 就意味着只有包括在最高 10% 概率中的 token 会被考虑。取值必须大于 0 且不超过 1。我们通常建议修改这个值或者更改 temperature，但不建议同时对两者进行修改。实际生效值取决于模型和模式：
+
+deepseek-flash：思考模式下默认值为 1.0，低于 0.95 的取值会按 0.95 处理；非思考模式下恒为 1.0，传入的值会被忽略。
+deepseek-v4-pro：思考模式下，启用工具调用时恒为 0.95，否则恒为 1.0，传入的值会被忽略。即使提供了 tools，将 tool_choice 设为 none 也会关闭工具调用。非思考模式下使用传入的值，默认值为 1.0。
+
+tools
+
+object[]
+
+NULLABLE
+
+模型可能会调用的 tool 的列表。目前，仅支持 function 作为工具。使用此参数来提供以 JSON 作为输入参数的 function 列表。tool 名称必须唯一。
+
+Array [
+
+type
+string
+REQUIRED
+
+Possible values: function
+
+tool 的类型。目前仅支持 function。
+
+function
+
+object
+
+REQUIRED
+
+description
+string
+
+function 的功能描述，供模型理解何时以及如何调用该 function。
+
+name
+string
+REQUIRED
+
+要调用的 function 名称。必须由 a-z、A-Z、0-9 字符组成，或包含下划线和连字符，最大长度为 128 个字符。
+
+parameters
+
+object
+
+function 的输入参数，以 JSON Schema 对象描述。请参阅Tool Calls 指南获取示例，并参阅JSON Schema 参考了解有关格式的文档。省略 parameters 会定义一个参数列表为空的 function。
+
+property name*
+any
+NULLABLE
+strict
+boolean
+
+Default value: false
+
+如果设置为 true，API 将在函数调用中使用 strict 模式，以确保输出始终符合函数的 JSON schema 定义。该功能为 Beta 功能，详细使用方式请参阅Tool Calls 指南
+
+]
+
+tool_choice
+string | object
+
+NULLABLE
+
+控制模型调用 tool 的行为。
+
+none 意味着模型不会调用任何 tool，而是生成一条消息。
+
+auto 意味着模型可以选择生成一条消息或调用一个或多个 tool。
+
+required 意味着模型必须调用一个或多个 tool。
+
+通过 {"type": "function", "function": {"name": "my_function"}} 指定特定 tool，会强制模型调用该 tool。
+
+当没有 tool 时，默认值为 none。如果有 tool 存在，默认值为 auto。
+
+思考模式下不支持 required 和指定具体 tool 的用法，API 会返回 400 错误。请先关闭思考模式。
+
+oneOf
+
+ChatCompletionToolChoice
+ChatCompletionNamedToolChoice
+
+string
+
+Possible values: none, auto, required
+
+logprobs
+boolean
+NULLABLE
+
+Default value: false
+
+是否返回所输出 token 的对数概率。如果为 true，则在 message 的 content 中返回每个输出 token 的对数概率。
+
+top_logprobs
+integer
+NULLABLE
+
+Possible values: >= 0 and <= 20
+
+Default value: null
+
+一个介于 0 到 20 之间的整数 N，指定每个输出位置返回输出概率 top N 的 token，且返回这些 token 的对数概率。指定此参数时，logprobs 必须为 true。
+
+user_id
+NULLABLE
+
+您自定义的 user_id。建议仅使用英文字母、数字、下划线（_）和连字符（-）。UTF-8 编码后不得超过 512 字节。请不要在 user_id 中包含用户隐私信息。
+
+user_id 可用于区分您业务侧的用户身份，以帮助我们进行内容安全处理。
+user_id 可用于 KVCache 缓存隔离，以进行隐私管理。
+user_id 可用于我们对您业务侧用户进行调度隔离。
+关于 user_id 参数更详细的描述，请参考限速与隔离
+frequency_penalty
+NULLABLE
+DEPRECATED
+
+该参数已不再支持。传入该参数将不会产生任何效果。
+
+presence_penalty
+NULLABLE
+DEPRECATED
+
+该参数已不再支持。传入该参数将不会产生任何效果。
+
+Responses​
+200 (No streaming)
+200 (Streaming)
+
+OK, 返回一个 chat completion 对象。
+
+APPLICATION/JSON
+Schema
+Example
+
+SCHEMA
+
+id
+string
+REQUIRED
+
+该对话的唯一标识符。
+
+choices
+
+object[]
+
+REQUIRED
+
+模型生成的 completion 的选择列表。
+
+Array [
+
+finish_reason
+string
+REQUIRED
+
+Possible values: stop, length, content_filter, tool_calls, insufficient_system_resource, aborted
+
+模型停止生成 token 的原因。
+
+stop：模型自然停止生成，或遇到 stop 序列中列出的字符串。
+
+length ：输出长度达到了模型上下文长度限制，或达到了 max_tokens 的限制。
+
+content_filter：输出内容因触发过滤策略而被过滤。
+
+tool_calls：模型进行了工具调用。
+
+insufficient_system_resource：系统推理资源不足，生成被打断。
+
+aborted：生成过程被中断。
+
+index
+integer
+REQUIRED
+
+该 completion 在模型生成的 completion 的选择列表中的索引。
+
+message
+
+object
+
+REQUIRED
+
+模型生成的 completion 消息。
+
+content
+string
+NULLABLE
+REQUIRED
+
+该 completion 的内容。
+
+reasoning_content
+string
+NULLABLE
+
+仅适用于思考模式。内容为 assistant 消息中在最终答案之前的推理内容。
+
+tool_calls
+
+object[]
+
+模型生成的 tool 调用，例如 function 调用。
+
+Array [
+
+id
+string
+REQUIRED
+
+tool 调用的 ID。
+
+type
+string
+REQUIRED
+
+Possible values: function
+
+tool 的类型。目前仅支持 function。
+
+function
+
+object
+
+REQUIRED
+
+模型调用的 function。
+
+name
+string
+REQUIRED
+
+模型调用的 function 名。
+
+arguments
+string
+REQUIRED
+
+要调用的 function 的参数，由模型生成，格式为 JSON。请注意，模型并不总是生成有效的 JSON，并且可能会臆造出你函数模式中未定义的参数。在调用函数之前，请在代码中验证这些参数。
+
+]
+
+role
+string
+REQUIRED
+
+Possible values: assistant
+
+生成这条消息的角色。
+
+logprobs
+
+object
+
+NULLABLE
+
+REQUIRED
+
+该 choice 的对数概率信息。
+
+content
+
+object[]
+
+NULLABLE
+
+REQUIRED
+
+一个包含输出 token 对数概率信息的列表。
+
+Array [
+
+token
+string
+REQUIRED
+
+输出的 token。
+
+logprob
+number
+REQUIRED
+
+该 token 的对数概率。-9999.0 代表该 token 的输出概率极小，不在 top 20 最可能输出的 token 中。
+
+bytes
+integer[]
+NULLABLE
+REQUIRED
+
+一个包含该 token UTF-8 字节表示的整数列表。一般在一个 UTF-8 字符被拆分成多个 token 来表示时有用。如果 token 没有对应的字节表示，则该值为 null。
+
+top_logprobs
+
+object[]
+
+REQUIRED
+
+一个包含在该输出位置上，输出概率 top N 的 token 的列表，以及它们的对数概率。在罕见情况下，返回的 token 数量可能少于请求参数中指定的 top_logprobs 值。
+
+Array [
+
+token
+string
+REQUIRED
+
+输出的 token。
+
+logprob
+number
+REQUIRED
+
+该 token 的对数概率。-9999.0 代表该 token 的输出概率极小，不在 top 20 最可能输出的 token 中。
+
+bytes
+integer[]
+NULLABLE
+REQUIRED
+
+一个包含该 token UTF-8 字节表示的整数列表。一般在一个 UTF-8 字符被拆分成多个 token 来表示时有用。如果 token 没有对应的字节表示，则该值为 null。
+
+]
+
+]
+
+reasoning_content
+
+object[]
+
+NULLABLE
+
+一个包含输出 token 对数概率信息的列表。
+
+Array [
+
+token
+string
+REQUIRED
+
+输出的 token。
+
+logprob
+number
+REQUIRED
+
+该 token 的对数概率。-9999.0 代表该 token 的输出概率极小，不在 top 20 最可能输出的 token 中。
+
+bytes
+integer[]
+NULLABLE
+REQUIRED
+
+一个包含该 token UTF-8 字节表示的整数列表。一般在一个 UTF-8 字符被拆分成多个 token 来表示时有用。如果 token 没有对应的字节表示，则该值为 null。
+
+top_logprobs
+
+object[]
+
+REQUIRED
+
+一个包含在该输出位置上，输出概率 top N 的 token 的列表，以及它们的对数概率。在罕见情况下，返回的 token 数量可能少于请求参数中指定的 top_logprobs 值。
+
+Array [
+
+token
+string
+REQUIRED
+
+输出的 token。
+
+logprob
+number
+REQUIRED
+
+该 token 的对数概率。-9999.0 代表该 token 的输出概率极小，不在 top 20 最可能输出的 token 中。
+
+bytes
+integer[]
+NULLABLE
+REQUIRED
+
+一个包含该 token UTF-8 字节表示的整数列表。一般在一个 UTF-8 字符被拆分成多个 token 来表示时有用。如果 token 没有对应的字节表示，则该值为 null。
+
+]
+
+]
+
+]
+
+created
+integer
+REQUIRED
+
+创建聊天完成时的 Unix 时间戳（以秒为单位）。
+
+model
+string
+REQUIRED
+
+生成该 completion 的模型名。
+
+system_fingerprint
+string
+REQUIRED
+
+This fingerprint represents the backend configuration that the model runs with.
+
+object
+string
+REQUIRED
+
+Possible values: chat.completion
+
+对象的类型, 其值为 chat.completion。
+
+usage
+
+object
+
+该对话补全请求的用量信息。
+
+completion_tokens
+integer
+REQUIRED
+
+模型 completion 产生的 token 数。
+
+prompt_tokens
+integer
+REQUIRED
+
+用户 prompt 所包含的 token 数。该值等于 prompt_cache_hit_tokens + prompt_cache_miss_tokens
+
+prompt_tokens_details
+
+object
+
+REQUIRED
+
+prompt tokens 的详细信息。
+
+cached_tokens
+integer
+
+用户 prompt 中，命中上下文缓存的 token 数。与 prompt_cache_hit_tokens 相同。
+
+prompt_cache_hit_tokens
+integer
+REQUIRED
+
+用户 prompt 中，命中上下文缓存的 token 数。
+
+prompt_cache_miss_tokens
+integer
+REQUIRED
+
+用户 prompt 中，未命中上下文缓存的 token 数。
+
+total_tokens
+integer
+REQUIRED
+
+该请求中，所有 token 的数量（prompt + completion）。
+
+completion_tokens_details
+
+object
+
+completion tokens 的详细信息。
+
+reasoning_tokens
+integer
+
+推理模型所产生的思维链 token 数量
+
+CURL
+PYTHON
+curl
+	# Set DEEPSEEK_API_KEY to your API key before running this example.
+
+	curl --silent --show-error --max-time 60 "https://api.deepseek.com/chat/completions" \
+
+	  --header "Authorization: Bearer ${DEEPSEEK_API_KEY}" \
+
+	  --header "Content-Type: application/json" \
+
+	  --data '{
+
+	  "model": "deepseek-flash",
+
+	  "messages": [
+
+	    {
+
+	      "role": "user",
+
+	      "content": "Say hello."
+
+	    }
+
+	  ],
+
+	  "max_tokens": 32,
+
+	  "temperature": 0,
+
+	  "thinking": {
+
+	    "type": "disabled"
+
+	  },
+
+	  "stream": false
+
+	}'
+
+下一页
+Responses API
+微信公众号
+社区
+邮箱
+Discord
+Twitter
+更多
+GitHub
+Copyright © 2026 DeepSeek, Inc.

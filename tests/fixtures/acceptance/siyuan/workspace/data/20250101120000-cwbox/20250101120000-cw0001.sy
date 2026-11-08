@@ -1,0 +1,326 @@
+{
+ "ID": "20250101120000-cw0001",
+ "Spec": "2",
+ "Type": "NodeDocument",
+ "Properties": {
+  "icon": "1f4d6",
+  "id": "20250101120000-cw0001",
+  "title": "思源标准文档",
+  "type": "doc",
+  "updated": "20250101120000"
+ },
+ "Children": [
+  {
+   "Type": "NodeHeading",
+   "ID": "20250101120001-cw0001",
+   "HeadingLevel": 2,
+   "Properties": {
+    "id": "20250101120001-cw0001",
+    "updated": "20250101120001"
+   },
+   "Children": [
+    {
+     "Type": "NodeText",
+     "Data": "标准文档标题"
+    }
+   ]
+  },
+  {
+   "Type": "NodeParagraph",
+   "ID": "20250101120001-cw0002",
+   "Properties": {
+    "id": "20250101120001-cw0002",
+    "updated": "20250101120001"
+   },
+   "Children": [
+    {
+     "Type": "NodeText",
+     "Data": "凿壁思源词·标准：这是标准 Spec 2 文档的正文段落。"
+    }
+   ]
+  },
+  {
+   "Type": "NodeList",
+   "ID": "20250101120001-cw0003",
+   "ListData": {},
+   "Properties": {
+    "id": "20250101120001-cw0003",
+    "updated": "20250101120001"
+   },
+   "Children": [
+    {
+     "Type": "NodeListItem",
+     "ID": "20250101120001-cw0004",
+     "ListData": {
+      "BulletChar": 42,
+      "Marker": "Kg=="
+     },
+     "Properties": {
+      "id": "20250101120001-cw0004",
+      "updated": "20250101120001"
+     },
+     "Children": [
+      {
+       "Type": "NodeParagraph",
+       "ID": "20250101120001-cw0005",
+       "Properties": {
+        "id": "20250101120001-cw0005",
+        "updated": "20250101120001"
+       },
+       "Children": [
+        {
+         "Type": "NodeText",
+         "Data": "无序列表项一"
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "Type": "NodeList",
+   "ID": "20250101120001-cw0006",
+   "ListData": {
+    "Typ": 1
+   },
+   "Properties": {
+    "id": "20250101120001-cw0006",
+    "updated": "20250101120001"
+   },
+   "Children": [
+    {
+     "Type": "NodeListItem",
+     "ID": "20250101120001-cw0007",
+     "ListData": {
+      "Typ": 1,
+      "Tight": true,
+      "Start": 1,
+      "Delimiter": 46,
+      "Padding": 3,
+      "Marker": "MS4=",
+      "Num": 1
+     },
+     "Properties": {
+      "id": "20250101120001-cw0007",
+      "updated": "20250101120001"
+     },
+     "Children": [
+      {
+       "Type": "NodeParagraph",
+       "ID": "20250101120001-cw0008",
+       "Properties": {
+        "id": "20250101120001-cw0008",
+        "updated": "20250101120001"
+       },
+       "Children": [
+        {
+         "Type": "NodeText",
+         "Data": "有序列表项一"
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "Type": "NodeList",
+   "ID": "20250101120001-cw0009",
+   "ListData": {
+    "Typ": 3
+   },
+   "Properties": {
+    "id": "20250101120001-cw0009",
+    "updated": "20250101120001"
+   },
+   "Children": [
+    {
+     "Type": "NodeListItem",
+     "ID": "20250101120001-cw0010",
+     "ListData": {
+      "Typ": 3,
+      "Tight": true,
+      "BulletChar": 45,
+      "Padding": 2,
+      "Marker": "LQ==",
+      "Num": -1
+     },
+     "Properties": {
+      "id": "20250101120001-cw0010",
+      "updated": "20250101120001"
+     },
+     "Children": [
+      {
+       "Type": "NodeTaskListItemMarker",
+       "TaskListItemChecked": true,
+       "TaskListItemMarker": 88
+      },
+      {
+       "Type": "NodeParagraph",
+       "ID": "20250101120001-cw0011",
+       "Properties": {
+        "id": "20250101120001-cw0011",
+        "updated": "20250101120001"
+       },
+       "Children": [
+        {
+         "Type": "NodeText",
+         "Data": "待办任务项"
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "Type": "NodeBlockquote",
+   "ID": "20250101120001-cw0012",
+   "Properties": {
+    "id": "20250101120001-cw0012",
+    "updated": "20250101120001"
+   },
+   "Children": [
+    {
+     "Type": "NodeBlockquoteMarker",
+     "Data": "> "
+    },
+    {
+     "Type": "NodeParagraph",
+     "ID": "20250101120001-cw0013",
+     "Properties": {
+      "id": "20250101120001-cw0013",
+      "updated": "20250101120001"
+     },
+     "Children": [
+      {
+       "Type": "NodeText",
+       "Data": "引述内容：部门经验总结"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "Type": "NodeCodeBlock",
+   "ID": "20250101120001-cw0014",
+   "CodeBlockInfo": "cHl0aG9u",
+   "Properties": {
+    "id": "20250101120001-cw0014",
+    "updated": "20250101120001"
+   },
+   "Children": [
+    {
+     "Type": "NodeCodeBlockFenceOpenMarker",
+     "Data": "```"
+    },
+    {
+     "Type": "NodeCodeBlockFenceInfoMarker"
+    },
+    {
+     "Type": "NodeCodeBlockCode",
+     "Data": "print('hello chiselwall')"
+    },
+    {
+     "Type": "NodeCodeBlockFenceCloseMarker",
+     "Data": "```"
+    }
+   ]
+  },
+  {
+   "Type": "NodeTable",
+   "ID": "20250101120001-cw0015",
+   "TableAligns": [
+    0,
+    0
+   ],
+   "Properties": {
+    "id": "20250101120001-cw0015",
+    "updated": "20250101120001"
+   },
+   "Children": [
+    {
+     "Type": "NodeTableHead",
+     "Data": "thead",
+     "Children": [
+      {
+       "Type": "NodeTableRow",
+       "Data": "tr",
+       "Children": [
+        {
+         "Type": "NodeTableCell",
+         "Data": "th",
+         "Children": [
+          {
+           "Type": "NodeText",
+           "Data": "表头A"
+          }
+         ]
+        },
+        {
+         "Type": "NodeTableCell",
+         "Data": "th",
+         "Children": [
+          {
+           "Type": "NodeText",
+           "Data": "表头B"
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "Type": "NodeTableRow",
+     "Data": "tr",
+     "Children": [
+      {
+       "Type": "NodeTableCell",
+       "Data": "td",
+       "Children": [
+        {
+         "Type": "NodeText",
+         "Data": "单元格甲"
+        }
+       ]
+      },
+      {
+       "Type": "NodeTableCell",
+       "Data": "td",
+       "Children": [
+        {
+         "Type": "NodeText",
+         "Data": "凿壁思源词·表格"
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "Type": "NodeThematicBreak",
+   "ID": "20250101120001-cw0016",
+   "Properties": {
+    "id": "20250101120001-cw0016",
+    "updated": "20250101120001"
+   }
+  },
+  {
+   "Type": "NodeParagraph",
+   "ID": "20250101120001-cw0017",
+   "Properties": {
+    "id": "20250101120001-cw0017",
+    "updated": "20250101120001"
+   },
+   "Children": [
+    {
+     "Type": "NodeText",
+     "Data": "文档结尾段。"
+    }
+   ]
+  }
+ ]
+}

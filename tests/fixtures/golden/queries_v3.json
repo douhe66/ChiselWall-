@@ -1,0 +1,101 @@
+[
+  {
+    "query": "怎么查看一个进程的启动命令",
+    "expect_title_like": [
+      "013_%"
+    ],
+    "note": "改写：命令行→启动参数"
+  },
+  {
+    "query": "数据库查询慢怎么优化",
+    "expect_title_like": [
+      "mysql%"
+    ],
+    "note": "改写：慢→性能排查"
+  },
+  {
+    "query": "容器里面怎么执行命令",
+    "expect_title_like": [
+      "docker"
+    ],
+    "note": "改写：容器→docker/nsenter"
+  },
+  {
+    "query": "程序崩溃了怎么保留现场",
+    "expect_title_like": [
+      "coredump"
+    ],
+    "note": "改写：崩溃→coredump"
+  },
+  {
+    "query": "怎么模拟网络丢包",
+    "expect_title_like": [
+      "iptables"
+    ],
+    "note": "改写：丢包→iptables"
+  },
+  {
+    "query": "Linux 上怎么安装新字体",
+    "expect_title_like": [
+      "Linux%"
+    ],
+    "note": "改写：安装字体→字体配置"
+  },
+  {
+    "query": "动态口令的密钥怎么生成",
+    "expect_title_like": [
+      "Google%",
+      "TOTP"
+    ],
+    "note": "改写：动态口令→TOTP"
+  },
+  {
+    "query": "大文件怎么存到 git",
+    "expect_title_like": [
+      "git"
+    ],
+    "note": "改写：大文件→lfs"
+  },
+  {
+    "query": "监控数据怎么迁到虚拟机",
+    "expect_title_like": [
+      "influxd%"
+    ],
+    "note": "改写：迁到虚拟机→vm迁移"
+  },
+  {
+    "query": "怎么用双网卡做冗余",
+    "expect_title_like": [
+      "SP1%"
+    ],
+    "note": "改写：冗余→双网卡安装"
+  },
+  {
+    "query": "JWT 令牌怎么校验",
+    "expect_title_like": [
+      "JWT"
+    ],
+    "note": "精确（base rank2，看 rerank）"
+  },
+  {
+    "query": "文件锁怎么用",
+    "expect_title_like": [
+      "文件锁"
+    ],
+    "note": "精确"
+  },
+  {
+    "query": "文件导入导出右键菜单怎么实现",
+    "expect_title_like": [
+      "文件导入导出"
+    ],
+    "note": "精确"
+  },
+  {
+    "query": "cgroup 内存限制怎么看",
+    "expect_title_like": [
+      "%cgroup%"
+    ],
+    "note": "精确"
+  }
+]

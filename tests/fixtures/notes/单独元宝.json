@@ -1,0 +1,40 @@
+{
+  "id": "conv-demo-alone",
+  "title": "cgroup 内存限制排查",
+  "agentId": "demo",
+  "projectId": "proj-x",
+  "convs": [
+    {
+      "speaker": "human",
+      "speech": "单独元宝词条：容器内 cgroup 内存限制怎么排查？"
+    },
+    {
+      "speaker": "ai",
+      "speech": "查看 /sys/fs/cgroup/memory/memory.limit_in_bytes 与 memory.stat。"
+    },
+    {
+      "speaker": "human",
+      "speech": "还有别的指标吗？"
+    },
+    {
+      "speaker": "ai",
+      "speechesV2": [
+        {
+          "content": [
+            {
+              "type": "text",
+              "msg": "还可关注 memory.oom_control 与当前用量。"
+            },
+            {
+              "type": "text",
+              "msg": "cgroup v2 路径为 /sys/fs/cgroup/memory.current。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "speaker": "ai"
+    }
+  ]
+}

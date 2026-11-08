@@ -1,0 +1,63 @@
+{
+ "ID": "20250101120000-cw0004",
+ "Spec": "4",
+ "Type": "NodeDocument",
+ "Properties": {
+  "icon": "1f4d6",
+  "id": "20250101120000-cw0004",
+  "title": "思源富文本表格文档",
+  "type": "doc",
+  "updated": "20250101120000"
+ },
+ "Children": [
+  {
+   "Type": "NodeParagraph",
+   "ID": "20250101120001-cw0001",
+   "Properties": {
+    "id": "20250101120001-cw0001",
+    "updated": "20250101120001"
+   },
+   "Children": [
+    {
+     "Type": "NodeText",
+     "Data": "凿壁思源词·富表：Spec 4 富文本表格。"
+    }
+   ]
+  },
+  {
+   "Type": "NodeTable",
+   "ID": "20250101120001-cw0002",
+   "TableAligns": [
+    0
+   ],
+   "Properties": {
+    "id": "20250101120001-cw0002",
+    "updated": "20250101120001",
+    "custom-sy-table-rich": "1"
+   },
+   "Children": [
+    {
+     "Type": "NodeTableRow",
+     "Data": "tr",
+     "Children": [
+      {
+       "Type": "NodeTableCell",
+       "Data": "td",
+       "TableCellRich": {
+        "spec": 1,
+        "format": "kramdown",
+        "content": "- first\n- second"
+       },
+       "Children": [
+        {
+         "Type": "NodeText",
+         "Data": "富文本单元格投影"
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

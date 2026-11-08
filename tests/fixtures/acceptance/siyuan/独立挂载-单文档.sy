@@ -1,0 +1,28 @@
+{
+ "ID": "20250101120000-cw0010",
+ "Spec": "2",
+ "Type": "NodeDocument",
+ "Properties": {
+  "icon": "1f4d6",
+  "id": "20250101120000-cw0010",
+  "title": "独立挂载的思源单文档",
+  "type": "doc",
+  "updated": "20250101120000"
+ },
+ "Children": [
+  {
+   "Type": "NodeParagraph",
+   "ID": "20250101120001-cw0001",
+   "Properties": {
+    "id": "20250101120001-cw0001",
+    "updated": "20250101120001"
+   },
+   "Children": [
+    {
+     "Type": "NodeText",
+     "Data": "凿壁思源词·独立：单文件挂载。"
+    }
+   ]
+  }
+ ]
+}

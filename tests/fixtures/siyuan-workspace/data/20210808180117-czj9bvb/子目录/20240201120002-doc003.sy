@@ -1,0 +1,34 @@
+{
+  "ID": "20240201120002-doc003",
+  "Spec": "2",
+  "Type": "NodeDocument",
+  "Properties": {
+    "id": "20240201120002-doc003",
+    "title": "嵌套子目录文档",
+    "type": "doc"
+  },
+  "Children": [
+    {
+      "Type": "NodeParagraph",
+      "Children": [
+        {
+          "Type": "NodeText",
+          "Data": "嵌套子目录词条：子目录下的 .sy 也能索引。"
+        }
+      ]
+    },
+    {
+      "Type": "NodeParagraph",
+      "Children": [
+        {
+          "Type": "NodeText"
+        },
+        {
+          "Type": "NodeTextMark",
+          "TextMarkType": "text",
+          "TextMarkTextContent": "空Data节点词条"
+        }
+      ]
+    }
+  ]
+}

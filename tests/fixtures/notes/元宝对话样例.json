@@ -1,0 +1,14 @@
+{
+  "id": "conv-demo-twin",
+  "title": "孪生对话",
+  "convs": [
+    {
+      "speaker": "human",
+      "speech": "这条对话有 md 孪生，json 不应被索引。"
+    },
+    {
+      "speaker": "ai",
+      "speech": "好的。"
+    }
+  ]
+}

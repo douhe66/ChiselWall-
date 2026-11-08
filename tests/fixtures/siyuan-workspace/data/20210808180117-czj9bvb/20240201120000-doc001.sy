@@ -1,0 +1,178 @@
+{
+  "ID": "20240201120000-doc001",
+  "Spec": "2",
+  "Type": "NodeDocument",
+  "Properties": {
+    "id": "20240201120000-doc001",
+    "title": "思源排版元素测试",
+    "type": "doc",
+    "updated": "20240201120000"
+  },
+  "Children": [
+    {
+      "Type": "NodeParagraph",
+      "Children": [
+        {
+          "Type": "NodeText",
+          "Data": "思源测试词条：这是直接读取 .sy 得到的正文。"
+        },
+        {
+          "Type": "NodeTextMark",
+          "TextMarkType": "strong",
+          "TextMarkTextContent": "加粗文本"
+        },
+        {
+          "Type": "NodeText",
+          "Data": "，以及"
+        },
+        {
+          "Type": "NodeTextMark",
+          "TextMarkType": "a",
+          "TextMarkTextContent": "链接文本",
+          "TextMarkAHref": "https://example.com"
+        },
+        {
+          "Type": "NodeText",
+          "Data": "。"
+        }
+      ]
+    },
+    {
+      "Type": "NodeHeading",
+      "HeadingLevel": 2,
+      "Children": [
+        {
+          "Type": "NodeText",
+          "Data": "列表小节"
+        }
+      ]
+    },
+    {
+      "Type": "NodeList",
+      "ListData": {
+        "Typ": 0,
+        "Marker": "Kg==",
+        "BulletChar": 42
+      },
+      "Children": [
+        {
+          "Type": "NodeListItem",
+          "Children": [
+            {
+              "Type": "NodeParagraph",
+              "Children": [
+                {
+                  "Type": "NodeText",
+                  "Data": "无序列表词条甲"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "Type": "NodeListItem",
+          "Children": [
+            {
+              "Type": "NodeParagraph",
+              "Children": [
+                {
+                  "Type": "NodeText",
+                  "Data": "无序列表词条乙"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Type": "NodeList",
+      "ListData": {
+        "Typ": 1,
+        "Marker": "MQ=="
+      },
+      "Children": [
+        {
+          "Type": "NodeListItem",
+          "Children": [
+            {
+              "Type": "NodeParagraph",
+              "Children": [
+                {
+                  "Type": "NodeText",
+                  "Data": "有序列表词条一"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Type": "NodeList",
+      "ListData": {
+        "Typ": 3
+      },
+      "Children": [
+        {
+          "Type": "NodeListItem",
+          "Children": [
+            {
+              "Type": "NodeParagraph",
+              "Children": [
+                {
+                  "Type": "NodeText",
+                  "Data": "任务列表词条"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Type": "NodeCodeBlock",
+      "CodeBlockInfo": "cHl0aG9u",
+      "Children": [
+        {
+          "Type": "NodeCodeBlockCode",
+          "Data": "print('思源代码块词条')"
+        }
+      ]
+    },
+    {
+      "Type": "NodeBlockquote",
+      "Children": [
+        {
+          "Type": "NodeParagraph",
+          "Children": [
+            {
+              "Type": "NodeText",
+              "Data": "引用块词条"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Type": "NodeImage",
+      "Properties": {
+        "title": "架构图-图片词条"
+      }
+    },
+    {
+      "Type": "NodeFutureFeature",
+      "Children": [
+        {
+          "Type": "NodeParagraph",
+          "Children": [
+            {
+              "Type": "NodeText",
+              "Data": "未知节点兼容词条"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,421 @@
+Documentation Index
+
+Fetch the complete documentation index at: /llms.txt
+
+Use this file to discover all available pages before exploring further.
+
+Skip to main content
+Ollama home page
+Search...
+Ctrl K
+API Reference
+Introduction
+Authentication
+Streaming
+Usage
+Errors
+OpenAI compatibility
+Anthropic compatibility
+Endpoints
+POST
+/api/generate
+POST
+/api/chat
+POST
+/api/embed
+POST
+/v1/systemone
+GET
+/api/tags
+GET
+/api/ps
+POST
+/api/show
+POST
+/api/create
+POST
+/api/copy
+POST
+/api/pull
+POST
+/api/push
+DEL
+/api/delete
+GET
+/api/version
+GET
+/api/usage
+GET
+/api/balance
+Sign in
+Download
+Guide
+Integrations
+API Reference
+API Reference
+OpenAI compatibility
+Copy page
+Connect OpenAI clients to Ollama. Ollama supports a subset of the OpenAI API.
+​
+Direct cloud access
+Set your API key in OLLAMA_API_KEY. Install the client with pip install openai. No Ollama installation required.
+import os
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="https://ollama.com/v1",
+    api_key=os.environ["OLLAMA_API_KEY"],
+)
+
+response = client.chat.completions.create(
+    model="gemma4:31b",
+    messages=[{"role": "user", "content": "Say hello in one sentence."}],
+)
+print(response.choices[0].message.content)
+
+The same client supports stateless Responses requests:
+response = client.responses.create(
+    model="gemma4:31b",
+    input="Say hello in one sentence.",
+)
+print(response.output_text)
+
+Choose a cloud model. The cloud API does not support stateful Responses, built-in web search through /v1/responses, or custom/freeform tool-call replay.
+​
+Local server usage
+These examples connect to your local Ollama server. The client requires an API key value, but Ollama ignores it. To use cloud models through this server, sign in to Ollama.
+​
+Simple /v1/chat/completions example
+basic.py
+
+Python
+
+from openai import OpenAI
+
+client = OpenAI(
+    base_url='http://localhost:11434/v1/',
+    api_key='ollama',  # required but ignored
+)
+
+chat_completion = client.chat.completions.create(
+    messages=[
+        {
+            'role': 'user',
+            'content': 'Say this is a test',
+        }
+    ],
+    model='gpt-oss:20b',
+)
+print(chat_completion.choices[0].message.content)
+
+​
+Simple /v1/responses example
+responses.py
+
+Python
+
+from openai import OpenAI
+
+client = OpenAI(
+    base_url='http://localhost:11434/v1/',
+    api_key='ollama',  # required but ignored
+)
+
+responses_result = client.responses.create(
+  model='qwen3:8b',
+  input='Write a short poem about the color blue',
+)
+print(responses_result.output_text)
+
+​
+/v1/chat/completions with vision example
+vision.py
+
+Python
+
+from openai import OpenAI
+
+client = OpenAI(
+    base_url='http://localhost:11434/v1/',
+    api_key='ollama',  # required but ignored
+)
+
+response = client.chat.completions.create(
+    model='qwen3-vl:8b',
+    messages=[
+        {
+            'role': 'user',
+            'content': [
+                {'type': 'text', 'text': "What's in this image?"},
+                {
+                    'type': 'image_url',
+                    'image_url': 'data:image/png;base64,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',
+                },
+            ],
+        }
+    ],
+    max_tokens=300,
+)
+print(response.choices[0].message.content)
+
+​
+Endpoints
+​
+/v1/chat/completions
+​
+Supported features
+Chat completions
+Streaming
+JSON mode
+Reproducible outputs
+Vision
+Tools
+Reasoning/thinking control (for thinking models)
+Logprobs
+​
+Supported request fields
+model
+messages
+Text content
+Image content
+Base64 encoded image
+Image URL
+Array of content parts
+frequency_penalty
+presence_penalty
+response_format
+seed
+stop
+stream
+stream_options
+include_usage
+temperature
+top_p
+max_tokens
+tools
+reasoning_effort (model-defined names and compatibility aliases)
+reasoning
+effort (model-defined names and compatibility aliases)
+tool_choice
+logit_bias
+user
+n
+reasoning_effort and reasoning.effort control model thinking. Use /api/show to discover each model’s supported values and default. When a model uses its metadata to resolve named levels, supported names are applied exactly and unsupported names resolve to the model default. Boolean-only models that support enabling thinking map recognized compatibility efforts to true, while "none" requests false. Models without metadata retain the existing compatibility aliases: "minimal" maps to "low", and "xhigh" or "ultra" map to "max". GPT-OSS keeps its existing OpenAI compatibility conversion: "minimal" uses "low", "xhigh" or "ultra" use "high", and "none" requests no thinking output.
+​
+/v1/completions
+​
+Supported features
+Completions
+Streaming
+JSON mode
+Reproducible outputs
+Logprobs
+​
+Supported request fields
+model
+prompt
+frequency_penalty
+presence_penalty
+seed
+stop
+stream
+stream_options
+include_usage
+temperature
+top_p
+max_tokens
+suffix
+best_of
+echo
+logit_bias
+user
+n
+​
+Notes
+prompt currently only accepts a string
+​
+/v1/models
+​
+Notes
+created corresponds to when the model was last modified
+owned_by corresponds to the ollama username, defaulting to "library"
+​
+/v1/models/{model}
+​
+Notes
+created corresponds to when the model was last modified
+owned_by corresponds to the ollama username, defaulting to "library"
+​
+/v1/embeddings
+​
+Supported request fields
+model
+input
+string
+array of strings
+array of tokens
+array of token arrays
+encoding format
+dimensions
+user
+​
+/v1/audio/speech
+Note: Added in Ollama v0.40.8
+Generates audio with speech models. The response streams while audio is generated.
+​
+Supported request fields
+model
+input (up to 4,096 characters)
+voice (one of the voices ollama show lists, in any case and with or without accents, such as Freya; omit it for the model’s default voice)
+response_format
+wav (default)
+pcm
+mp3, opus, aac, flac
+speed (1 only)
+stream_format (audio only)
+instructions
+​
+Notes
+Audio is 16-bit, mono, 24 kHz. pcm returns raw little-endian samples with no header.
+The default response_format is wav, not mp3.
+Unsupported values return a 400 error instead of being ignored.
+​
+/v1/audio/transcriptions
+Transcribes speech with models that accept audio input.
+​
+Supported request fields
+file (WAV at up to 384 kHz; up to 512 MB and 2 hours)
+model
+language (ISO 639-1 code such as fr, or an English language name; omit it to let the model detect the language)
+prompt (used by models without speech-specific instructions)
+response_format
+json (default)
+text
+verbose_json (one segment per transcribed piece of audio; language is the output language for translations; for transcriptions it is set only when given in the request)
+srt, vtt
+temperature (default 0)
+stream (server-sent transcript.text.delta and transcript.text.done events)
+timestamp_granularities
+​
+Notes
+Audio longer than the model takes at once (30 seconds for current models) is split at pauses and transcribed piece by piece. Streaming sends each piece as it finishes.
+Each model gets the transcription instructions its publisher documents.
+​
+/v1/audio/translations
+Note: Added in Ollama v0.40.12
+Translates speech into text in another language.
+​
+Supported request fields
+file
+model
+to_language (Ollama extension; ISO 639-1 code of the output language, default en)
+language (Ollama extension; the spoken language, if known)
+prompt (used by models without speech-specific instructions)
+response_format, temperature and stream, as for transcriptions
+​
+Responses API
+POST /v1/responses
+Note: Added in Ollama v0.13.3
+Ollama supports the OpenAI Responses API. Only the non-stateful flavor is supported (i.e., there is no previous_response_id or conversation support).
+​
+Supported features
+Streaming
+Tools (function calling)
+Reasoning summaries (for thinking models)
+Stateful requests
+​
+Supported request fields
+model
+input
+instructions
+tools
+stream
+temperature
+top_p
+max_output_tokens
+reasoning
+effort (model-defined names and compatibility aliases)
+think (Ollama extension; boolean, model-defined string, or null)
+previous_response_id (stateful v1/responses not supported)
+conversation (stateful v1/responses not supported)
+truncation
+​
+Models
+For local inference, download a model before using it:
+ollama pull llama3.2
+
+Direct cloud requests use the identifiers from https://ollama.com/api/tags and do not require a pull. Through a signed-in local server, select a cloud model such as gemma4:cloud.
+​
+Default model names on a local server
+For tooling that relies on default OpenAI model names such as gpt-3.5-turbo, use ollama cp to copy an existing model name to a temporary name:
+ollama cp llama3.2 gpt-3.5-turbo
+
+Afterwards, this new model name can be specified the model field:
+curl http://localhost:11434/v1/chat/completions \
+    -H "Content-Type: application/json" \
+    -d '{
+        "model": "gpt-3.5-turbo",
+        "messages": [
+            {
+                "role": "user",
+                "content": "Hello!"
+            }
+        ]
+    }'
+
+​
+Setting the local context size
+The OpenAI API does not have a way of setting the context size for a model. If you need to change the context size, create a Modelfile which looks like:
+FROM <some model>
+PARAMETER num_ctx <context size>
+
+Use the ollama create mymodel command to create a new model with the updated context size. Call the API with the updated model name:
+curl http://localhost:11434/v1/chat/completions \
+    -H "Content-Type: application/json" \
+    -d '{
+        "model": "mymodel",
+        "messages": [
+            {
+                "role": "user",
+                "content": "Hello!"
+            }
+        ]
+    }'
+
+Previous
+Anthropic compatibility
+Next
+On this page
+Direct cloud access
+Local server usage
+Simple /v1/chat/completions example
+Simple /v1/responses example
+/v1/chat/completions with vision example
+Endpoints
+/v1/chat/completions
+Supported features
+Supported request fields
+/v1/completions
+Supported features
+Supported request fields
+Notes
+/v1/models
+Notes
+/v1/models/{model}
+Notes
+/v1/embeddings
+Supported request fields
+/v1/audio/speech
+Supported request fields
+Notes
+/v1/audio/transcriptions
+Supported request fields
+Notes
+/v1/audio/translations
+Supported request fields
+Responses API
+Supported features
+Supported request fields
+Models
+Default model names on a local server
+Setting the local context size

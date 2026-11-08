@@ -1,0 +1,47 @@
+{
+ "ID": "20250101120000-cw0007",
+ "Spec": "2",
+ "Type": "NodeDocument",
+ "Properties": {
+  "icon": "1f4d6",
+  "id": "20250101120000-cw0007",
+  "title": "思源伪块样本",
+  "type": "doc",
+  "updated": "20250101120000"
+ },
+ "Children": [
+  {
+   "Type": "NodeParagraph",
+   "ID": "20250101120001-cw0001",
+   "Properties": {
+    "id": "20250101120001-cw0001",
+    "updated": "20250101120001"
+   },
+   "Children": [
+    {
+     "Type": "NodeText",
+     "Data": "凿壁思源词·伪块："
+    }
+   ]
+  },
+  {
+   "Type": "NodeUnknownFutureType",
+   "ID": "20250101120001-cw0002",
+   "Properties": {
+    "id": "20250101120001-cw0002",
+    "updated": "20250101120001"
+   },
+   "Children": [
+    {
+     "Type": "NodeText",
+     "Data": "未来节点文本"
+    }
+   ]
+  },
+  {
+   "Type": "NodeText",
+   "ID": "20250101120001-cw0003",
+   "Data": "非块节点带历史ID"
+  }
+ ]
+}

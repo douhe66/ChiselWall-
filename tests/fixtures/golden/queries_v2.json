@@ -1,0 +1,142 @@
+[
+  {
+    "query": "JWT 令牌怎么校验",
+    "expect_title_like": [
+      "JWT"
+    ],
+    "note": "认证"
+  },
+  {
+    "query": "HTTPS 证书培训讲了什么",
+    "expect_title_like": [
+      "HTTPS%"
+    ],
+    "note": "证书"
+  },
+  {
+    "query": "iptables 怎么模拟网络丢包",
+    "expect_title_like": [
+      "iptables"
+    ],
+    "note": "网络"
+  },
+  {
+    "query": "nginx 的 WAF 怎么配置",
+    "expect_title_like": [
+      "nginx"
+    ],
+    "note": "网络"
+  },
+  {
+    "query": "docker 怎么进入容器",
+    "expect_title_like": [
+      "docker"
+    ],
+    "note": "容器"
+  },
+  {
+    "query": "mysql 性能排查看什么",
+    "expect_title_like": [
+      "mysql%"
+    ],
+    "note": "数据库"
+  },
+  {
+    "query": "coredump 怎么抓 SIGSEGV",
+    "expect_title_like": [
+      "coredump"
+    ],
+    "note": "系统"
+  },
+  {
+    "query": "DKMS 是什么",
+    "expect_title_like": [
+      "DKMS"
+    ],
+    "note": "系统"
+  },
+  {
+    "query": "Linux 字体怎么配置",
+    "expect_title_like": [
+      "Linux%"
+    ],
+    "note": "系统"
+  },
+  {
+    "query": "Google Authenticator 密钥怎么转换",
+    "expect_title_like": [
+      "Google%"
+    ],
+    "note": "认证"
+  },
+  {
+    "query": "TOTP 的共享密钥是什么",
+    "expect_title_like": [
+      "TOTP"
+    ],
+    "note": "认证"
+  },
+  {
+    "query": "git lfs 怎么用",
+    "expect_title_like": [
+      "git"
+    ],
+    "note": "工具"
+  },
+  {
+    "query": "influxd 怎么迁移到 vm",
+    "expect_title_like": [
+      "influxd%"
+    ],
+    "note": "监控"
+  },
+  {
+    "query": "SP1 双网卡怎么安装",
+    "expect_title_like": [
+      "SP1%"
+    ],
+    "note": "部署"
+  },
+  {
+    "query": "NAS 机箱怎么选",
+    "expect_title_like": [
+      "NAS"
+    ],
+    "note": "硬件"
+  },
+  {
+    "query": "UEM 管理员操作日志查不到",
+    "expect_title_like": [
+      "UEM%"
+    ],
+    "note": "排障"
+  },
+  {
+    "query": "进程启动参数怎么查看",
+    "expect_title_like": [
+      "013_%"
+    ],
+    "note": "系统"
+  },
+  {
+    "query": "文件锁怎么用",
+    "expect_title_like": [
+      "文件锁"
+    ],
+    "note": "文件"
+  },
+  {
+    "query": "文件导入导出右键菜单怎么实现",
+    "expect_title_like": [
+      "文件导入导出"
+    ],
+    "note": "文件"
+  },
+  {
+    "query": "cgroup 内存限制怎么看",
+    "expect_title_like": [
+      "%cgroup%"
+    ],
+    "note": "系统"
+  }
+]

@@ -1,0 +1,46 @@
+{
+  "ID": "20240201120001-doc002",
+  "Spec": "4",
+  "Type": "NodeDocument",
+  "Properties": {
+    "id": "20240201120001-doc002",
+    "title": "表格测试",
+    "type": "doc",
+    "updated": "20240201120001"
+  },
+  "Children": [
+    {
+      "Type": "NodeTable",
+      "Children": [
+        {
+          "Type": "NodeTableCell",
+          "Children": [
+            {
+              "Type": "NodeParagraph",
+              "Children": [
+                {
+                  "Type": "NodeText",
+                  "Data": "表格词条甲"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "Type": "NodeTableCell",
+          "Children": [
+            {
+              "Type": "NodeParagraph",
+              "Children": [
+                {
+                  "Type": "NodeText",
+                  "Data": "表格词条乙"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

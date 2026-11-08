@@ -1,0 +1,1 @@
+{"exportTime": "2026-05-08T08:30:00", "conversations": [{"id": "uuid-cw0001", "title": "元宝标准对话", "messages": [{"role": "user", "content": "什么是 FTS5？凿壁元宝词·标准"}, {"role": "assistant", "content": "FTS5 是 SQLite 的全文检索模块。", "thinking": "需要解释清楚"}]}]}

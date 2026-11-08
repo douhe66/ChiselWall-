@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>凿壁 ChiselWall · 随手记</title>
+  <!-- __CHISEL_VERSION__ 由服务端注入：?v= 破坏浏览器旧缓存（M2-FIX5） -->
+  <link rel="stylesheet" href="style.css?v=__CHISEL_VERSION__">
+  <!-- Vue3 本地内置（F5：不再依赖 CDN，内网可用；无构建工具形态保留） -->
+  <script src="vendor/vue.global.prod.js?v=__CHISEL_VERSION__"></script>
+</head>
+<body>
+<div id="app" v-cloak>
+  <aside class="sidebar">
+    <div class="logo">凿壁 <span>ChiselWall</span></div>
+    <nav>
+      <div class="nav-item" :class="{ active: page === 'notes' }" @click="page = 'notes'">随手记</div>
+      <div class="nav-item" :class="{ active: page === 'ask' }" @click="switchPage('ask')">随手问</div>
+      <div class="nav-item" :class="{ active: page === 'settings' }" @click="switchPage('settings')">设置</div>
+    </nav>
+    <div class="foot">知识留本机 · 中心只路由 <span class="ver">v__CHISEL_VERSION__</span></div>
+  </aside>
+
+  <main v-if="page === 'notes'">
+    <!-- 顶栏统计（纯文本观感，FIX2）+ 重建索引 -->
+    <header class="topbar">
+      <p class="stats" aria-label="索引进度统计">
+        已索引 <b>{{ stats.indexed }}</b> ·
+        待处理 <b>{{ stats.pending }}</b> ·
+        失败 <b class="warn">{{ stats.error }}</b> ·
+        排除 <b>{{ stats.excluded }}</b> ·
+        挂载 <b>{{ stats.mounts }}</b>
+      </p>
+      <button class="btn" @click="reindex">重建索引</button>
+    </header>
+
+    <!-- 搜索 -->
+    <section class="search-box">
+      <input v-model.trim="query" placeholder="搜索本机知识（中文分词 / 关键词，回车提交）"
+             @keyup.enter="doSearch">
+      <button class="btn primary" @click="doSearch" :disabled="busy">搜索</button>
+    </section>
+    <section class="results" v-if="searched">
+      <div class="muted small">{{ hits.length ? '命中 ' + hits.length + ' 条（topk）' : '没有命中，试试换关键词' }}</div>
+      <article class="hit" v-for="h in strongHits" :key="h.doc_id + ':' + h.chunk_seq">
+        <header>
+          <strong>{{ h.title }}</strong>
+          <span class="badge">{{ h.format }}</span>
+          <span class="badge" :class="routeClass(h.route)">{{ routeLabel(h.route) }}</span>
+          <span v-if="h.reranked" class="badge route-hybrid">已精排</span>
+          <span class="muted small">{{ h.rel_path }}</span>
+        </header>
+        <div class="snippet-md" :class="{ expanded: h.snippetExpanded }" v-html="renderSnippet(h)"></div>
+        <button v-if="(h.snippet_text || '').length > 240" class="btn small" @click="h.snippetExpanded = !h.snippetExpanded">{{ h.snippetExpanded ? '收起片段' : '展开片段' }}</button>
+        <footer>
+          <button class="btn small" @click="togglePreview(h)">{{ h.previewOpen ? '收起' : '预览' }}</button>
+          <button class="btn small" @click="openLocation(h.doc_id)">打开所在位置</button>
+          <button class="btn small" @click="openFile(h)">直接打开</button>
+          <!-- M2-FIX6：无默认关联时的应用内打开方案 -->
+          <button v-for="a in h.alts" :key="a.app" class="btn small" @click="openWith(h, a.app)">
+            {{ a.label }}
+          </button>
+        </footer>
+        <div v-if="h.previewOpen" class="preview md-preview" v-html="renderMarkdown(h.preview || '加载中…')"></div>
+      </article>
+      <details v-if="weakHits.length" class="weak-results">
+        <summary>弱相关结果（{{ weakHits.length }} 条，默认不进 AI）</summary>
+        <article class="hit weak" v-for="h in weakHits" :key="'w' + h.doc_id + ':' + h.chunk_seq">
+          <header>
+            <strong>{{ h.title }}</strong>
+            <span class="badge">{{ h.format }}</span>
+            <span class="badge route-fallback">弱相关</span>
+            <span class="muted small">{{ h.rel_path }}</span>
+          </header>
+          <div class="snippet-md" :class="{ expanded: h.snippetExpanded }" v-html="renderSnippet(h)"></div>
+        </article>
+      </details>
+    </section>
+
+    <section class="panels">
+      <!-- 笔记分组（§15.6 / GR-07） -->
+      <div class="panel">
+        <h3>笔记分组 <button class="btn small" @click="groupAddOpen = !groupAddOpen">＋ 建组</button></h3>
+        <div v-if="groupAddOpen" class="row">
+          <input v-model="newGroupName" placeholder="组名（如 数据库）" @keyup.enter="addGroup">
+          <button class="btn" @click="addGroup">建组</button>
+        </div>
+        <ul>
+          <li v-for="g in groups" :key="g.group_id" class="group-row">
+            <span class="group-name" :class="{ active: docsFilter.groupId === g.group_id }"
+                  @click="toggleGroupFilter(g)">{{ g.name }}</span>
+            <span class="muted small">（成员 {{ g.members }} · 文档 {{ g.docs }}）</span>
+            <button class="btn small" @click="toggleGroupDetail(g)">成员</button>
+            <button class="btn small" @click="excludeGroup(g)">整组排除</button>
+            <button class="btn small danger" @click="removeGroup(g)">删组</button>
+          </li>
+          <li v-if="!groups.length" class="muted small">还没有分组。建组后可把挂载或文档归入（一个来源可属多组）</li>
+        </ul>
+        <div v-if="activeGroup" class="group-detail">
+          <h4>「{{ activeGroup.name }}」成员
+            <select v-model="memberForm.mountId" class="small-input">
+              <option value="">选择挂载</option>
+              <option v-for="m in mounts" :key="m.mount_id" :value="m.mount_id">{{ m.kind }} · {{ m.path }}</option>
+            </select>
+            <input v-model="memberForm.relPath" class="small-input" placeholder="文档相对路径（留空=整个挂载）">
+            <button class="btn small" @click="addMember">归组</button>
+          </h4>
+          <ul>
+            <li v-for="m in groupMembers" :key="m.member_id">
+              {{ m.kind }} · {{ m.path }}{{ m.rel_path ? ' / ' + m.rel_path : '' }}
+              <button class="btn small danger" @click="removeMember(m)">移出</button>
+            </li>
+          </ul>
+          <p class="muted small">整组排除会生成真实排除规则记录；删组不影响已生成规则；规则可在排除面板单独删除。</p>
+        </div>
+      </div>
+
+      <!-- 挂载管理（类型徽标） -->
+      <div class="panel">
+        <h3>挂载管理 <button class="btn small" @click="mountAddOpen = !mountAddOpen">＋ 添加</button></h3>
+        <div v-if="mountAddOpen" class="row">
+          <select v-model="newMountKind">
+            <option value="auto">自动识别</option>
+            <option value="directory">目录</option>
+            <option value="obsidian">Obsidian 库</option>
+            <option value="siyuan">思源工作区</option>
+            <option value="file">单文件</option>
+          </select>
+          <input v-model="newMount" placeholder="绝对路径" @keyup.enter="addMount">
+          <button class="btn" @click="addMount">添加</button>
+        </div>
+        <ul>
+          <li v-for="m in mounts" :key="m.mount_id">
+            <span class="badge kind">{{ kindLabel(m.kind) }}</span> {{ m.path }}
+            <span class="muted small">（{{ m.docs }} 篇）</span>
+            <button class="btn small" @click="docsFilter.mountId = docsFilter.mountId === m.mount_id ? '' : m.mount_id; loadDocs()">
+              {{ docsFilter.mountId === m.mount_id ? '取消筛选' : '筛选' }}</button>
+            <button class="btn small danger" @click="removeMount(m.mount_id)">移除</button>
+          </li>
+          <li v-if="!mounts.length" class="muted small">还没有挂载，点「＋ 添加」挂载你的笔记目录/文件/Obsidian 库/思源工作区</li>
+        </ul>
+      </div>
+
+      <!-- 排除面板（三类规则 + 双列表，观察-1） -->
+      <div class="panel">
+        <h3>排除规则 <button class="btn small" @click="ruleAddOpen = !ruleAddOpen">＋ 添加</button></h3>
+        <p class="muted small" v-if="stats.excluded_by_reason">
+          排除构成：默认规则 {{ stats.excluded_by_reason.default }} ·
+          不支持格式 {{ stats.excluded_by_reason.unsupported_format }} ·
+          md 孪生去重 {{ stats.excluded_by_reason.duplicate_md_twin }} ·
+          用户规则 {{ stats.excluded_by_reason.user_rule }}
+        </p>
+        <div v-if="ruleAddOpen" class="row">
+          <select v-model="newRule.kind">
+            <option value="file">单文件</option>
+            <option value="dir">目录</option>
+            <option value="glob">通配符</option>
+          </select>
+          <input v-model="newRule.pattern" placeholder="绝对路径或 glob（如 *.log、draft/*）" @keyup.enter="addRule">
+          <button class="btn" @click="addRule">添加</button>
+        </div>
+        <ul>
+          <li v-for="r in rules" :key="r.rule_id">
+            <span class="badge">{{ r.kind }}</span> {{ r.pattern }}
+            <button class="btn small danger" @click="removeRule(r.rule_id)">删除</button>
+          </li>
+          <li v-if="!rules.length" class="muted small">默认已排除：隐藏文件、.git/.svn、node_modules、.obsidian、~$ 临时文件、二进制、超大文件、不支持的格式（如 .json/.log）</li>
+        </ul>
+        <h4>排除 / 不支持格式（{{ excluded.length }}）</h4>
+        <ul class="doc-list">
+          <li v-for="d in excluded.slice(0, 30)" :key="'ex' + d.doc_id">
+            <span class="muted small">{{ d.rel_path }}</span> — {{ d.error }}
+          </li>
+          <li v-if="!excluded.length" class="muted small">暂无</li>
+        </ul>
+        <h4>解析失败（{{ failed.length }}）</h4>
+        <ul class="doc-list">
+          <li v-for="f in failed.slice(0, 30)" :key="'fa' + f.doc_id">
+            <span class="muted small">{{ f.rel_path }}</span> — {{ f.error }}
+          </li>
+          <li v-if="!failed.length" class="muted small">暂无</li>
+        </ul>
+      </div>
+
+      <!-- 文档列表与只读预览 -->
+      <div class="panel wide">
+        <h3>文档浏览
+          <select v-model="docsFilter.mountId" @change="loadDocs">
+            <option value="">全部挂载</option>
+            <option v-for="m in mounts" :key="m.mount_id" :value="m.mount_id">{{ m.kind }} · {{ m.path }}</option>
+          </select>
+          <select v-model="docsFilter.groupId" @change="loadDocs">
+            <option value="">全部文档</option>
+            <option v-for="g in groups" :key="g.group_id" :value="g.group_id">组：{{ g.name }}</option>
+          </select>
+          <span class="muted small">共 {{ docs.length }} 条（{{ docsStatusCount }}）</span>
+        </h3>
+        <ul class="doc-list">
+          <li v-for="d in docs.slice(0, 100)" :key="d.doc_id" class="doc-row">
+            <span class="badge">{{ d.format }}</span>
+            <span class="badge status" :class="'st-' + d.status">{{ statusLabel(d.status) }}</span>
+            <strong>{{ d.title }}</strong>
+            <span class="muted small">{{ d.rel_path }}</span>
+            <button class="btn small" @click="toggleDocPreview(d)">{{ d.previewOpen ? '收起' : '预览' }}</button>
+            <button class="btn small" @click="openLocation(d.doc_id)">打开所在位置</button>
+            <button class="btn small" @click="openFile(d)">直接打开</button>
+            <div v-if="d.previewOpen" class="preview md-preview" v-html="renderMarkdown(d.preview || '加载中…')"></div>
+          </li>
+          <li v-if="!docs.length" class="muted small">暂无文档（索引完成前先等待；状态徽标会实时更新）</li>
+        </ul>
+      </div>
+    </section>
+
+    <p v-if="errorMsg" class="warn">{{ errorMsg }}</p>
+  </main>
+
+  <!-- 随手问（M4/M5）：广播问答 + 可选 AI 综合（不再单独设 AI 栏目） -->
+  <main v-if="page === 'ask'">
+    <header class="topbar">
+      <p class="stats">随手问 · 首问广播给在线同事，追问基于上一轮结果（不重新广播）</p>
+      <span class="badge" :class="relay.connected ? 'route-main' : ''">{{ relay.connected ? '已连接' : '未连接' }}</span>
+    </header>
+    <section class="chat-layout" :style="{ '--ask-results-w': askResultsWidth + 'px' }">
+      <aside class="chat-sessions">
+        <button class="btn" style="width:100%;margin-bottom:8px" @click="newAskSession">+ 新建会话</button>
+        <div v-if="!askSessions.length" class="muted small">暂无会话，点上方新建；首问会广播。</div>
+        <div v-for="s in askSessions" :key="s.id" class="chat-session" :class="{ active: askSession && askSession.id === s.id }" @click="openAskSession(s.id)">
+          <div class="chat-session-title">{{ s.title }}</div>
+          <div class="muted small">{{ s.message_count }} 条</div>
+          <div class="chat-session-actions">
+            <button class="btn small" @click.stop="renameAskSession(s)">改名</button>
+            <button class="btn small" @click.stop="deleteAskSession(s)">删除</button>
+          </div>
+        </div>
+      </aside>
+      <div class="chat-main">
+        <div v-if="!askSession" class="muted" style="padding:24px">新建或选择左侧会话；第一条问题会广播给在线同事。</div>
+        <template v-else>
+          <div class="chat-toolbar">
+            <strong>{{ askSession.title }}</strong>
+            <span class="muted small">先看右侧搜索结果，再点「AI 综合」生成回答</span>
+            <button class="btn primary small" @click="summarizeAskSession" :disabled="askSummarizing || !askLatestHits().length">{{ askSummarizing ? 'AI 综合中…' : 'AI 综合' }}</button>
+          </div>
+          <div class="chat-messages">
+            <div v-if="!askTurns.length" class="muted small">这个会话还没有提问。</div>
+            <div v-for="t in askTurns" :key="t.id" class="chat-msg" :class="t.role">
+              <div class="chat-role">{{ t.role === 'user' ? '我' : '回答' }}</div>
+              <div class="md-preview" v-html="renderMarkdown(t.content)"></div>
+              <div v-if="t.role === 'user' && t.payload" class="ask-turn-meta">
+                <span v-if="t.payload.elapsed_ms" class="badge">耗时 {{ t.payload.elapsed_ms }}ms</span>
+                <span v-if="t.payload.responded" class="badge">返回 {{ t.payload.responded }}/{{ t.payload.expected }} 位</span>
+                <span v-for="a in (t.payload.answers || [])" :key="a.node" class="badge kind">@{{ a.node }} {{ a.elapsed_ms }}ms · {{ a.hit_count }} 条</span>
+                <span v-if="t.payload.search_text && t.payload.search_text !== t.content" class="muted small">实际检索：{{ t.payload.search_text }}</span>
+              </div>
+              <div v-if="t.role === 'assistant' && t.payload" class="ask-turn-meta">
+                <span v-if="t.payload.elapsed_ms" class="muted small">AI 用时 {{ t.payload.elapsed_ms }}ms · {{ t.payload.model }}</span>
+              </div>
+              <div v-if="t.role === 'assistant' && t.payload && (t.payload.citations || []).length" class="chat-citations" style="padding:6px 0 0">
+                <span class="muted small">引用：</span>
+                <span v-for="c in t.payload.citations" :key="c.index" class="badge">[{{ c.index }}] {{ c.title }}</span>
+              </div>
+              <div v-if="t.role === 'user' && t.payload && (t.payload.aggregated || []).length" class="muted small">本轮命中 {{ t.payload.aggregated.length }} 处（右侧查看原文）</div>
+
+            </div>
+            <div v-if="askSending" class="muted small">{{ askProgress || '正在收集同事回答…' }}</div>
+            <p v-if="askError" class="warn">{{ askError }}</p>
+          </div>
+          <div class="ask-groups-row">
+            <span class="muted small">提问组：</span>
+            <label v-for="g in relayGroups" :key="g" class="muted small">
+              <input type="checkbox" :value="g" v-model="askGroupsSel" @change="askGroupsTouched = true"> {{ g }}
+            </label>
+          </div>
+          <div class="chat-input-row">
+            <textarea v-model="askInput" rows="2" :placeholder="askHasTurns() ? '继续追问（基于上一轮结果）' : '输入问题，首问广播给在线同事'" @keydown.enter.exact.prevent="sendAsk"></textarea>
+            <label class="muted small ask-auto-sum"><input type="checkbox" v-model="askAutoSummary" @change="saveAskAuto"> AI 综合</label>
+            <button class="btn primary" @click="sendAsk" :disabled="askSending">{{ askSending ? '处理中…' : (askHasTurns() ? '追问' : '广播提问') }}</button>
+          </div>
+        </template>
+      </div>
+      <div class="ask-resizer" @mousedown="startAskResize" title="拖动调整结果栏宽度"></div>
+      <aside class="ask-results">
+        <div class="ask-results-head">
+          <strong>搜索结果</strong>
+          <span class="badge">{{ askLatestHits().length }} 处</span>
+          <button class="btn small" @click="summarizeAskSession" :disabled="askSummarizing || !askLatestHits().length">{{ askSummarizing ? 'AI 综合中…' : 'AI 综合' }}</button>
+        </div>
+        <div v-if="askLatestPayload()" class="ask-results-meta">
+          <span v-if="askLatestPayload().elapsed_ms" class="badge">耗时 {{ askLatestPayload().elapsed_ms }}ms</span>
+          <span v-if="askLatestPayload().responded" class="badge">返回 {{ askLatestPayload().responded }}/{{ askLatestPayload().expected }} 位</span>
+          <span v-for="a in (askLatestPayload().answers || [])" :key="a.node" class="badge kind">@{{ a.node }} {{ a.elapsed_ms }}ms · {{ a.hit_count }} 条</span>
+        </div>
+        <div class="ask-results-scroll">
+          <div v-if="!askLatestHits().length" class="muted small">本轮还没有结果。</div>
+          <article class="hit" v-for="(h, i) in askLatestHits()" :key="i">
+            <header>
+              <strong>{{ h.title }}</strong>
+              <span class="badge">{{ h.format }}</span>
+              <span class="badge" :class="routeClass(h.route)">{{ routeLabel(h.route) }}</span>
+              <span class="badge kind" v-for="n in (h.nodes || [])" :key="n">@{{ n }}</span>
+              <span class="muted small">{{ h.rel_path }}</span>
+            </header>
+            <div class="snippet-md" :class="{ expanded: h.snippetExpanded }" v-html="renderSnippet(h)"></div>
+            <button v-if="(h.snippet_text || '').length > 240" class="btn small" @click="h.snippetExpanded = !h.snippetExpanded">{{ h.snippetExpanded ? '收起片段' : '展开片段' }}</button>
+            <footer>
+              <template v-if="localSource(h)">
+                <button class="btn small" @click="toggleLocalPreview(h)">{{ h.previewOpen ? '收起预览' : '预览全文' }}</button>
+                <button class="btn small" @click="openLocation(localSource(h).doc_id)">打开所在位置</button>
+                <button class="btn small" @click="openFile(localSource(h))">直接打开</button>
+              </template>
+              <template v-else>
+                <button v-if="remoteSource(h)" class="btn small" @click="fetchRemote(h)">{{ h.previewOpen ? '收起远端预览' : '预览远端全文' }}</button>
+                <span class="muted small">来自 @{{ (h.nodes || []).join('、@') }} 的机器</span>
+              </template>
+            </footer>
+            <div v-if="h.previewOpen" class="preview md-preview" v-html="renderMarkdown(h.preview || '加载中…')"></div>
+          </article>
+        </div>
+      </aside>
+    </section>
+  </main>
+
+  <!-- 设置页（M6 占位，只读说明） -->
+  <main v-if="page === 'settings'">
+    <header class="topbar"><p class="stats">设置（M6 打包分发起实现，此处为占位）</p></header>
+    <section class="panels">
+      <div class="panel wide">
+        <h3>Relay 连接</h3>
+        <p class="muted small">中心只路由、不存知识。地址/昵称/token 由管理员发放；保存后自动重连。</p>
+        <div class="row"><input v-model="relayForm.relay_url" placeholder="ws://中心IP:18760/ws"></div>
+        <div class="row"><input v-model="relayForm.nick" placeholder="昵称（同事看到的名字）"></div>
+        <div class="row"><input v-model="relayForm.token" type="password" :placeholder="relay.has_token ? '已保存 token（留空则不变）' : 'token（管理员发给你）'"></div>
+        <p class="muted small">
+          当前：{{ relay.connected ? '已连接' : '未连接' }} · 我是 {{ relay.nick }} · 在线 {{ relay.online ? relay.online.length : 0 }} 人
+        </p>
+        <h4>提问组（勾选 = 加入，取消 = 退出）</h4>
+        <ul class="group-list">
+          <li v-for="g in relayGroupInfo" :key="g.name">
+            <label><input type="checkbox" :value="g.name" v-model="relayForm.groups"> <strong>{{ g.name }}</strong></label>
+            <span class="muted small">{{ g.description || '（暂无描述）' }} · 在线 {{ g.online || 0 }} 人</span>
+          </li>
+          <li v-if="!relayGroupInfo.length" class="muted small">还没有组，先建一个吧</li>
+        </ul>
+        <div class="row">
+          <input v-model="newGroupName" placeholder="新组名（如 数据库组）">
+          <input v-model="newGroupDesc" placeholder="组描述（这个组讨论什么）">
+          <button class="btn" @click="createGroup">建组</button>
+        </div>
+        <div class="row">
+          <button class="btn primary" @click="saveRelayConfig" :disabled="relaySaving">{{ relaySaving ? '保存中…' : '保存并连接' }}</button>
+        </div>
+      </div>
+      <div class="panel wide">
+        <h3>AI 配置（OpenAI 兼容）</h3>
+        <p class="muted small">支持 DeepSeek API、公司内网模型、Ollama（/v1 端点）。保存后立即生效；key 只保存在本机配置目录。</p>
+        <div class="row"><input v-model="aiForm.base_url" placeholder="base_url，如 https://api.deepseek.com 或 http://内网IP:8000/v1"></div>
+        <div class="row"><input v-model="aiForm.model" placeholder="模型名，如 deepseek-chat / 内网模型名"></div>
+        <div class="row"><input v-model="aiForm.api_key" type="password" :placeholder="ai.has_key ? '已保存 key（留空则保持不变）' : 'API key（内网无鉴权可留空）'"></div>
+        <div class="row">
+          <input v-model.number="aiForm.temperature" type="number" step="0.1" min="0" max="2" style="max-width:120px" placeholder="temperature">
+          <label class="muted small"><input type="checkbox" v-model="aiForm.use_system_proxy"> 使用系统代理（访问外网模型时可能需要）</label>
+          <button class="btn" @click="saveAIConfig" :disabled="aiSaving">{{ aiSaving ? '保存中…' : '保存' }}</button>
+          <button class="btn" @click="testAI" :disabled="aiTesting">{{ aiTesting ? '测试中…' : '测试连接' }}</button>
+        </div>
+        <p class="muted small">
+          当前：{{ ai.ready ? '已就绪 · ' + ai.model : '未配置' }}
+          <span v-if="ai.has_key"> · key {{ ai.masked_key }}</span>
+        </p>
+        <h4>AI 系统提示词 <span class="muted small">（控制综合回答的风格与引用要求）</span></h4>
+        <textarea v-model="aiForm.system_prompt" class="prompt-input" rows="6"
+                  placeholder="留空 = 使用内置默认提示词（见下方）"></textarea>
+        <div class="row">
+          <button class="btn small" @click="aiForm.system_prompt = ''">恢复默认</button>
+          <span class="muted small">保存后对下一次 AI 综合生效</span>
+        </div>
+        <details class="prompt-default">
+          <summary class="muted small">查看内置默认提示词</summary>
+          <pre class="preview">{{ ai.default_system_prompt }}</pre>
+        </details>
+        <div v-if="aiTestError" class="ai-error-box">
+          <p class="muted small">最近一次测试错误（可复制后分享）：</p>
+          <pre class="preview">{{ aiTestError }}</pre>
+          <button class="btn small" @click="copyAIError">复制错误信息</button>
+        </div>
+      </div>
+      <div class="panel wide">
+        <h3>语义搜索（向量混合，可选）</h3>
+        <p class="muted small">默认关。开启后关键词 + 向量混合检索；模型在本地（约 23MB）或内网 /embeddings。索引期会占用少量 CPU。</p>
+        <div class="row">
+          <label class="muted small"><input type="checkbox" v-model="vectorForm.enabled"> 启用向量混合检索</label>
+        </div>
+        <div class="row">
+          <select v-model="vectorForm.provider">
+            <option value="local">本地 bge-small-zh ONNX</option>
+            <option value="openai">内网 /embeddings（OpenAI 兼容）</option>
+          </select>
+          <span v-if="vector.ready" class="badge route-main">已就绪 · 向量 {{ vector.vectors }} 条 · {{ vector.backend }}</span>
+        <span v-if="vector.stale" class="badge route-fallback">模型/维度已变化，请重建向量索引</span>
+          <span v-else class="muted small">{{ vector.enabled ? '未就绪：检查模型路径/服务' : '未启用' }}</span>
+        </div>
+        <div class="row" v-if="vectorForm.provider === 'local'">
+          <input v-model="vectorForm.model_dir" placeholder="本地模型目录（留空 = models/bge-small-zh-v1.5）">
+        </div>
+        <template v-if="vectorForm.provider === 'openai'">
+          <div class="row"><input v-model="vectorForm.base_url" placeholder="内网 embedding base_url（如 http://内网:8000/v1）"></div>
+          <div class="row"><input v-model="vectorForm.model" placeholder="embedding 模型名"></div>
+          <div class="row"><input v-model="vectorForm.api_key" type="password" :placeholder="vector.has_key ? '已保存 key（留空不变）' : 'API key（可留空）'"></div>
+        </template>
+        <div class="row">
+          <button class="btn" @click="saveVectorConfig" :disabled="vectorSaving">{{ vectorSaving ? '保存中…' : '保存' }}</button>
+          <button class="btn" @click="rebuildVector" :disabled="vectorRebuilding">{{ vectorRebuilding ? '重建中…' : '重建向量索引' }}</button>
+          <span class="muted small">{{ vector.error || '' }}</span>
+        </div>
+      </div>
+      <div class="panel wide">
+        <h3>重排 rerank（可选，提问端精排）</h3>
+        <p class="muted small">对候选做一次 cross-encoder 精排，提升前几条相关性；失败/超时自动回退关键词+向量排序。被搜索端不参与。</p>
+        <div class="row">
+          <label class="muted small"><input type="checkbox" v-model="rerankForm.enabled"> 启用重排</label>
+          <select v-model="rerankForm.provider">
+            <option value="http">内网 rerank 服务</option>
+            <option value="local">本地 cross-encoder</option>
+          </select>
+          <span class="badge" :class="rerank.ready ? 'route-main' : ''">{{ rerank.ready ? '已就绪 · ' + rerank.name : '未就绪' }}</span>
+        </div>
+        <template v-if="rerankForm.provider === 'http'">
+          <div class="row"><input v-model="rerankForm.base_url" placeholder="服务 base_url（如 http://内网:8000）"></div>
+          <div class="row">
+            <input v-model="rerankForm.model" placeholder="模型名（服务端识别，可留空）">
+            <select v-model="rerankForm.api_style">
+              <option value="auto">自动识别协议</option>
+              <option value="cohere">Cohere / Jina 风格</option>
+              <option value="tei">TEI 风格</option>
+            </select>
+          </div>
+          <div class="row"><input v-model="rerankForm.api_key" type="password" :placeholder="rerank.has_key ? '已保存 key（留空不变）' : 'API key（可留空）'"></div>
+        </template>
+        <template v-else>
+          <div class="row"><input v-model="rerankForm.model_dir" placeholder="本地模型目录（含 model.json / model.onnx / tokenizer.json）"></div>
+          <p class="muted small">换模型只需换目录和 model.json 清单，代码无需修改；格式说明见 models/rerank/README.md。</p>
+        </template>
+        <div class="row">
+          <input v-model.number="rerankForm.max_candidates" type="number" min="1" max="100" style="max-width:120px" placeholder="候选数">
+          <input v-model.number="rerankForm.top_k" type="number" min="1" max="20" style="max-width:100px" placeholder="保留 Top">
+          <button class="btn" @click="saveRerankConfig" :disabled="rerankSaving">{{ rerankSaving ? '保存中…' : '保存' }}</button>
+          <button class="btn" @click="testRerank" :disabled="rerankTesting">{{ rerankTesting ? '测试中…' : '测试' }}</button>
+        </div>
+        <p v-if="rerankError" class="warn">{{ rerankError }} <button class="btn small" @click="copyText(rerankError)">复制</button></p>
+      </div>
+      <div class="panel wide">
+        <h3>查询改写（P2，可选）</h3>
+        <p class="muted small">用已配置的 AI 从问题中提取 1–3 个检索式，提升同义/换个说法的召回；只影响本机搜索与随手问的本机回答。失败/超时自动回退原查询。</p>
+        <div class="row">
+          <label class="muted small"><input type="checkbox" v-model="queryForm.enabled"> 启用查询改写</label>
+          <input v-model.number="queryForm.max_queries" type="number" min="1" max="5" style="max-width:110px" placeholder="最多改写数">
+          <span class="badge" :class="query.ready ? 'route-main' : ''">{{ query.ready ? '已就绪' : (query.ai_ready ? '未启用' : '需先配置 AI') }}</span>
+          <button class="btn" @click="saveQueryConfig" :disabled="querySaving">{{ querySaving ? '保存中…' : '保存' }}</button>
+        </div>
+        <p class="muted small">改写提示词（可自定义；清空则恢复默认）</p>
+        <textarea v-model="queryForm.system_prompt" class="prompt-input" rows="6" placeholder="留空 = 使用内置默认提示词"></textarea>
+        <div class="row">
+          <button class="btn small" @click="resetQueryPrompt">恢复默认提示词</button>
+          <span class="muted small">修改后保存即生效；下一次改写使用新提示词。</span>
+        </div>
+      </div>
+      <div class="panel"><h3>限流参数</h3><p class="muted small">每来源 1 问/5s、查询预算 800ms、top-k=8 —— M4 随广播问答生效。</p></div>
+    </section>
+  </main>
+
+  <!-- 操作结果 toast（M2-FIX3） -->
+  <div class="toast" :class="[toast.tone, { show: toast.visible }]">{{ toast.text }}</div>
+
+  <div class="token-modal" v-if="needToken">
+    <div class="token-card">
+      <h3>本地 API token</h3>
+      <p class="muted small">启动日志中打印的 token（X-Chisel-Token），也保存在本机配置目录 config.json（Windows: %USERPROFILE%\.chiselwall\config.json）。输入后本页记住（localStorage），仅本机使用。</p>
+      <input v-model="tokenInput" @keyup.enter="saveToken" placeholder="粘贴 token">
+      <button class="btn primary" @click="saveToken">确定</button>
+    </div>
+  </div>
+</div>
+<script src="app.js?v=__CHISEL_VERSION__"></script>
+</body>
+</html>
