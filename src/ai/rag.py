@@ -1,6 +1,7 @@
 """提问者侧 RAG 综合（M5，设计 §10/§15.5）：聚合结果 -> 预算内上下文 -> 带引用回答。"""
 from __future__ import annotations
 
+import time
 from typing import Optional
 
 from ai.llm import DEFAULT_SYSTEM_PROMPT, AIConfig, LLMClient, LLMError
@@ -26,8 +27,8 @@ def select_local_window(chunks: list[str], seq: int, *, max_chars: int = 3000) -
 def build_context(
     aggregated: list[dict],
     *,
-    max_chars: int = 8000,
-    top_n: int = 20,
+    max_chars: int = 24000,
+    top_n: int = 24,
     snippet_chars: int = 320,
 ) -> tuple[str, list[dict]]:
     """把聚合命中拼成编号资料，并在字符预算内截断。返回 (context, citations)。"""
@@ -39,7 +40,7 @@ def build_context(
         snippet = str(hit.get("snippet_text") or hit.get("snippet_html") or "")
         limit = snippet_chars
         if hit.get("context_full"):
-            limit = max(snippet_chars, 5000)
+            limit = max(snippet_chars, min(16000, max_chars // 2))
         if hit.get("context_full"):
             snippet = snippet[:limit]
         else:
@@ -49,8 +50,10 @@ def build_context(
         nodes = ",".join(hit.get("nodes") or []) or "?"
         rel = str(hit.get("rel_path") or "")
         block = "[%d] 《%s》（来源：%s；路径：%s）\n%s" % (len(citations) + 1, title, nodes, rel, snippet)
-        if used + len(block) > max_chars and citations:
-            break
+        if used + len(block) > max_chars:
+            if citations:
+                break
+            block = block[:max_chars]  # 单条超预算时硬截断，避免整个上下文超限
         parts.append(block)
         citations.append({
             "index": len(citations) + 1,
@@ -82,6 +85,55 @@ def build_messages(
     user = "问题：%s\n\n资料：\n%s" % (question.strip(), context) if context else "问题：%s" % question.strip()
     messages.append({"role": "user", "content": user})
     return messages
+
+
+def stream_answer(
+    question: str,
+    aggregated: list[dict],
+    cfg: AIConfig,
+    *,
+    history: Optional[list] = None,
+):
+    """流式综合：yield {type: start|delta|done|error, ...}。"""
+    if not cfg.ready:
+        yield {"type": "error", "error": "AI 未配置：请在设置页填写 base_url / model（以及 api_key）"}
+        return
+    context, citations = build_context(aggregated, max_chars=cfg.max_context_chars, top_n=cfg.top_n)
+    started = time.monotonic()
+    yield {
+        "type": "start",
+        "citations": citations,
+        "context_chars": len(context),
+        "model": cfg.model,
+    }
+    text_parts: list[str] = []
+    client = LLMClient(cfg)
+    messages = build_messages(question, context, cfg.system_prompt, history=history)
+    try:
+        for delta in client.chat_stream(messages):
+            text_parts.append(delta)
+            yield {"type": "delta", "text": delta}
+    except LLMError as exc:
+        # 某些 OpenAI 兼容端点不支持 stream：还没出字时回退到普通请求
+        if text_parts:
+            yield {"type": "error", "error": str(exc), "citations": citations}
+            return
+        try:
+            result = client.chat(messages)
+        except LLMError as fallback_exc:
+            yield {"type": "error", "error": str(fallback_exc), "citations": citations}
+            return
+        text_parts.append(str(result.get("text") or ""))
+        if text_parts[0]:
+            yield {"type": "delta", "text": text_parts[0]}
+    yield {
+        "type": "done",
+        "text": "".join(text_parts),
+        "citations": citations,
+        "model": cfg.model,
+        "elapsed_ms": int((time.monotonic() - started) * 1000),
+        "context_chars": len(context),
+    }
 
 
 def answer_question(

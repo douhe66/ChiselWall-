@@ -20,7 +20,7 @@
 - **随手记**：挂载本地目录/文件，支持思源（.sy）、Obsidian、Markdown、TXT、DOCX、XLSX、PDF、CSV 等；只建索引，不复制、不改动原文件；支持排除规则（目录/glob/单文件）与增量索引。
 - **随手问**：向在线同事广播问题，聚合各自命中的知识；**会话列表/历史持久化**，首问广播，后续追问基于上一轮结果、不重复广播。
 - **搜索结果先看**：右侧独立结果栏展示命中原文、来源同事、耗时与片段；支持预览全文、打开所在位置、直接打开本地文件、远端预览。
-- **AI 综合**：可选。提问框旁勾选「AI 综合」自动生成；不勾选则先看结果，再点会话级「AI 综合」按钮。回答带引用编号。
+- **AI 综合**：可选。提问框旁勾选「AI 综合」自动生成；不勾选则先看结果，再点会话级「AI 综合」按钮。支持 **SSE 流式输出**，上下文预算默认 24000 字符（可调），长文档保留开头/命中窗口/结尾，每轮引用独立落库。
 - **混合检索**：SQLite FTS5 + jieba 中文分词 + 向量检索（bge-small-zh）+ RRF 融合；弱相关结果单独折叠，不进入 AI 上下文。
 - **可选重排（rerank）**：HTTP（Cohere/Jina/TEI 兼容）或本地 ONNX；带分数缓存、空闲自动卸载。
 - **可选查询改写**：用已配置的 LLM 把问题改写成 1–3 条检索式；默认关，提示词可在设置页自定义。
@@ -129,7 +129,7 @@ python tests/make_fixtures.py
 python -m unittest discover -s tests -p "test_*.py"
 ```
 
-当前：**287 项测试通过**（Windows）。评测脚本：
+当前：**293 项测试通过**（Windows）。评测脚本：
 
 ```bash
 python tests/eval_retrieval.py --db ~/.chiselwall/chiselwall.db
@@ -162,6 +162,7 @@ models/       本地向量/重排模型（不提交 Git）
 - 查询改写：[docs/design/p2-query-rewrite.md](docs/design/p2-query-rewrite.md)
 - 向量后端：[docs/design/p3-vector-backend.md](docs/design/p3-vector-backend.md)
 - UI 设计系统：[docs/design/ui-refresh.md](docs/design/ui-refresh.md)
+- AI 流式/上下文：[docs/design/ai-streaming-context.md](docs/design/ai-streaming-context.md)
 - 验收报告：[docs/review/](docs/review/)
 - 未完成事项：[docs/planning/open-items.md](docs/planning/open-items.md)
 
@@ -171,7 +172,7 @@ models/       本地向量/重排模型（不提交 Git）
 - 2 万块向量规模未压测（当前 2030 块约 81s，建索引指标可能不达标）；
 - 内网 `/embeddings`、真实 HTTP rerank 服务未接真实端点；
 - 随手问追问固定沿用上一轮结果，暂无"重新广播"按钮；
-- AI 输出无流式，长上下文受预算截断；
+- 超长文档仍会按上下文预算截断（带"中间省略"标记）；
 - relay 目前 ws:// + token，生产建议放在 TLS 反向代理后；
 - 许可证待定（内部项目）。
 
@@ -285,7 +286,7 @@ python tests/make_fixtures.py
 python -m unittest discover -s tests -p "test_*.py"
 ```
 
-Currently **287 tests pass** on Windows. Evaluation:
+Currently **293 tests pass** on Windows. Evaluation:
 
 ```bash
 python tests/eval_retrieval.py --db ~/.chiselwall/chiselwall.db
@@ -298,7 +299,7 @@ python tests/eval_ab.py --golden tests/fixtures/golden/queries_v3.json
 - 20k-chunk scale is not benchmarked (2030 chunks ≈ 81s; build-time target may be missed).
 - Real intranet `/embeddings` and HTTP rerank endpoints are not verified.
 - Follow-ups reuse the previous result set; no "re-broadcast" button yet.
-- AI output is not streamed; long contexts are truncated by budget.
+- Extremely long documents are still truncated by the context budget (with explicit omission markers).
 - Relay uses ws:// + token; put it behind TLS in production.
 - License: TBD (internal project).
 

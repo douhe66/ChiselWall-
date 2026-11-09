@@ -55,6 +55,7 @@ createApp({
       askProgress: "",
       askResultsWidth: parseInt(localStorage.getItem("chisel_ask_results_w") || "340", 10) || 340,
       askSummarizing: false,
+      askStream: null,
       askAutoSummary: localStorage.getItem("chisel_ask_auto_summary") !== "0",
       askGroupsOpen: false,
       followupText: "",
@@ -68,7 +69,7 @@ createApp({
       chatLastCitations: [],
       // M5 AI
       ai: { ready: false, model: "", base_url: "", has_key: false, masked_key: "" },
-      aiForm: { base_url: "", model: "", api_key: "", temperature: 0.2, use_system_proxy: false, system_prompt: "" },
+      aiForm: { base_url: "", model: "", api_key: "", temperature: 0.2, use_system_proxy: false, system_prompt: "", max_context_chars: 24000, top_n: 24, max_tokens: 4000 },
       // M7 向量检索
       vector: { ready: false, enabled: false, vectors: 0, error: "", provider: "local", model_dir: "", base_url: "", model: "", has_key: false, dim: 512 },
       vectorForm: { enabled: false, provider: "local", model_dir: "", base_url: "", model: "", api_key: "", dim: 512, use_system_proxy: false },
@@ -168,7 +169,46 @@ createApp({
         if (el) el.focus();
       });
     },
-    switchPage(page) {
+    async streamSSE(path, body, onEvent) {
+      const res = await fetch(path, {
+        method: "POST",
+        headers: Object.assign({ "Content-Type": "application/json" }, this.headers()),
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      if (res.status === 401) {
+        this.needToken = true;
+        throw new Error("need token");
+      }
+      if (!res.ok) {
+        let detail = "";
+        try { detail = (await res.json()).detail || ""; } catch (e) { /* ignore */ }
+        throw new Error(detail || res.statusText);
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let cut = buffer.indexOf("\n\n");
+        while (cut >= 0) {
+          const chunk = buffer.slice(0, cut);
+          buffer = buffer.slice(cut + 2);
+          let event = "message";
+          let data = "";
+          for (const line of chunk.split("\n")) {
+            if (line.startsWith("event:")) event = line.slice(6).trim();
+            else if (line.startsWith("data:")) data += line.slice(5).trim();
+          }
+          if (data) {
+            try { onEvent(event, JSON.parse(data)); } catch (e) { /* 跳过坏帧 */ }
+          }
+          cut = buffer.indexOf("\n\n");
+        }
+      }
+    },
+    async switchPage(page) {
       this.page = page;
       if (page === "ask") { this.loadRelay(); this.loadAI(); this.loadAskSessions(); }
       if (page === "chat") { this.loadChatSessions(); this.loadAI(); }
@@ -278,18 +318,31 @@ createApp({
         return;
       }
       this.askSummarizing = true;
+      this.askStream = { active: true, text: "", citations: [] };
+      this.scrollChat();
       try {
-        const r = await this.api("/api/ask-sessions/" + this.askSession.id + "/summarize", { method: "POST" });
-        this.askTurns = r.turns || [];
-        this.scrollChat();
-        if (r.answer && r.answer.status && r.answer.status !== "ready") {
-          this.showToast(r.answer.error || "AI 未就绪", "error");
-        }
-        await this.loadAskSessions();
+        await this.streamSSE("/api/ask-sessions/" + this.askSession.id + "/summarize/stream", null, (ev, data) => {
+          if (ev === "start") {
+            this.askStream.citations = data.citations || [];
+          } else if (ev === "delta") {
+            this.askStream.text += data.text || "";
+            this.scrollChat();
+          } else if (ev === "done") {
+            this.askTurns = data.turns || this.askTurns;
+            this.askStream = null;
+            this.scrollChat();
+            this.loadAskSessions();
+          } else if (ev === "error") {
+            this.askStream = null;
+            this.showToast(data.error || "AI 综合失败", "error");
+          }
+        });
       } catch (e) {
+        this.askStream = null;
         this.showToast("AI 综合失败：" + (e.message || e), "error");
       } finally {
         this.askSummarizing = false;
+        if (this.askStream) this.askStream = null;
       }
     },
     startAskResize(e) {
@@ -399,17 +452,39 @@ createApp({
           this.askProgress = "正在收集同事回答…";
           await this.openAskSession(sid);
           this.startAskPoll(r.qid, r.turn_id);
+        } else if (this.askAutoSummary) {
+          this.askInput = "";
+          this.askStream = { active: true, text: "", citations: [] };
+          this.scrollChat();
+          await this.streamSSE("/api/ask-sessions/" + sid + "/followup/stream", { text, summarize: true }, (ev, data) => {
+            if (ev === "start") {
+              if (data.user_turn) this.askTurns = [...this.askTurns, data.user_turn];
+              this.askStream.citations = data.citations || [];
+            } else if (ev === "delta") {
+              this.askStream.text += data.text || "";
+              this.scrollChat();
+            } else if (ev === "done") {
+              this.askTurns = data.turns || this.askTurns;
+              this.askStream = null;
+              this.scrollChat();
+              this.loadAskSessions();
+            } else if (ev === "error") {
+              this.askStream = null;
+              this.showToast(data.error || "追问失败", "error");
+            }
+          });
+          this.askSending = false;
         } else {
           const r = await this.api("/api/ask-sessions/" + sid + "/followup", {
             method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ text, summarize: this.askAutoSummary }),
+            body: JSON.stringify({ text, summarize: false }),
           });
           this.askTurns = r.turns || [];
           this.askInput = "";
           this.scrollChat();
           await this.loadAskSessions();
           this.askSending = false;
-          if (!this.askAutoSummary) this.showToast("已记录追问；点「AI 综合」生成回答", "info");
+          this.showToast("已记录追问；点「AI 综合」生成回答", "info");
         }
       } catch (e) {
         this.askError = String(e.message || e);
@@ -721,6 +796,9 @@ createApp({
         if (!this.aiForm.model && this.ai.model) this.aiForm.model = this.ai.model;
         this.aiForm.use_system_proxy = !!this.ai.use_system_proxy;
         this.aiForm.system_prompt = this.ai.system_prompt || "";
+        this.aiForm.max_context_chars = this.ai.max_context_chars || 24000;
+        this.aiForm.top_n = this.ai.top_n || 24;
+        this.aiForm.max_tokens = this.ai.max_tokens || 4000;
       } catch (e) {
         // AI 配置读取失败不阻断页面；设置页保存/测试时会给出明确错误
       }
@@ -747,6 +825,9 @@ createApp({
           temperature: Number(this.aiForm.temperature) || 0.2,
           use_system_proxy: !!this.aiForm.use_system_proxy,
           system_prompt: this.aiForm.system_prompt || "",
+          max_context_chars: Number(this.aiForm.max_context_chars) || 24000,
+          top_n: Number(this.aiForm.top_n) || 24,
+          max_tokens: Number(this.aiForm.max_tokens) || 4000,
         };
         if (this.aiForm.api_key) body.api_key = this.aiForm.api_key;
         this.ai = await this.api("/api/ai/config", {

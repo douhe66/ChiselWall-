@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -34,12 +34,32 @@ def _resolve_ui_dir() -> Path:
 
 UI_DIR = _resolve_ui_dir()
 
+
+def _sse_response(events):
+    """把 {type, ...} 事件转成 SSE 流；生成器异常也转成 error 事件。"""
+
+    def gen():
+        try:
+            for ev in events:
+                payload = json.dumps(ev, ensure_ascii=False, default=str)
+                yield "event: %s\ndata: %s\n\n" % (ev.get("type", "message"), payload)
+        except Exception as exc:
+            yield "event: error\ndata: %s\n\n" % json.dumps(
+                {"type": "error", "error": str(exc)}, ensure_ascii=False
+            )
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream; charset=utf-8",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
 # 版本号单一来源（M2-FIX5）：同时用于
 #   - index.html 中 app.js/style.css 的 ?v= 缓存破坏参数（占位符 __CHISEL_VERSION__）
 #   - 页脚版本展示
 #   - /api/health 的 version 字段
 # 任何 UI 改动必须 bump 此值，否则用户浏览器仍可能命中旧缓存。
-APP_VERSION = "0.8.8"
+APP_VERSION = "0.9.1"
 
 # 健康检查路径：公开（不含知识内容）
 PUBLIC_PATHS = {"/api/health", "/"}
@@ -64,6 +84,9 @@ class AIConfigIn(BaseModel):
     enabled: Optional[bool] = None
     use_system_proxy: Optional[bool] = None
     system_prompt: Optional[str] = None
+    max_context_chars: Optional[int] = None
+    top_n: Optional[int] = None
+    max_tokens: Optional[int] = None
 
 
 class QueryConfigIn(BaseModel):
@@ -502,6 +525,21 @@ def create_app(agent, token: str = "") -> FastAPI:
         if not result.get("ok") and result.get("error"):
             raise HTTPException(status_code=400, detail=str(result["error"]))
         return result
+
+    @app.post("/api/ask-sessions/{sid}/summarize/stream", dependencies=[Depends(require_token)])
+    async def ask_session_summarize_stream(sid: str):
+        if not agent.ai_config.ready:
+            raise HTTPException(status_code=400, detail="AI 未配置：请先在设置页填写 base_url / model")
+        return _sse_response(agent.ask_session_summarize_stream(sid))
+
+    @app.post("/api/ask-sessions/{sid}/followup/stream", dependencies=[Depends(require_token)])
+    async def ask_session_followup_stream(sid: str, body: SessionAskIn):
+        text = (body.text or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="追问不能为空")
+        if body.summarize and not agent.ai_config.ready:
+            raise HTTPException(status_code=400, detail="AI 未配置：请先在设置页填写 base_url / model")
+        return _sse_response(agent.ask_session_followup_stream(sid, text, body.summarize))
 
     @app.post("/api/ask-sessions/{sid}/followup", dependencies=[Depends(require_token)])
     async def ask_session_followup(sid: str, body: SessionAskIn) -> dict:

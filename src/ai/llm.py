@@ -36,11 +36,11 @@ class AIConfig:
     api_key: str = ""
     model: str = ""
     temperature: float = 0.2
-    timeout_s: float = 60.0
-    max_context_chars: int = 8000   # 上下文字符预算（约 4K-8K token，按模型可调）
-    top_n: int = 20                 # 送入模型的最大片段数
+    timeout_s: float = 120.0
+    max_context_chars: int = 24000  # 上下文字符预算（长文档/多文档）
+    top_n: int = 24                 # 送入模型的最大片段数
     use_system_proxy: bool = False  # 默认直连（内网模型）；访问外网模型可开启
-    max_tokens: int = 2000          # 回答长度上限（含代码块，800 会截断长答案）
+    max_tokens: int = 4000          # 回答长度上限（流式输出，长答案不再被截断）
     system_prompt: str = ""         # 留空 = 使用内置默认提示词
 
     @classmethod
@@ -61,6 +61,9 @@ class AIConfig:
             "use_system_proxy": self.use_system_proxy,
             "system_prompt": self.system_prompt,
             "default_system_prompt": DEFAULT_SYSTEM_PROMPT,
+            "max_context_chars": self.max_context_chars,
+            "top_n": self.top_n,
+            "max_tokens": self.max_tokens,
         }
 
     @property
@@ -85,7 +88,13 @@ class AIConfigStore:
             return AIConfig()
         if not isinstance(data, dict):
             return AIConfig()
-        return AIConfig.from_dict(data)
+        cfg = AIConfig.from_dict(data)
+        # 旧版默认 8000/2000 会自动升到更长上下文与回答预算；用户可再手动调小。
+        if cfg.max_context_chars == 8000:
+            cfg.max_context_chars = 24000
+        if cfg.max_tokens == 2000:
+            cfg.max_tokens = 4000
+        return cfg
 
     def save(self, cfg: AIConfig) -> None:
         self.config_dir.mkdir(parents=True, exist_ok=True)
@@ -181,6 +190,57 @@ class LLMClient:
             "elapsed_ms": elapsed,
             "usage": data.get("usage") or {},
         }
+
+    def chat_stream(self, messages: list[dict], *, max_tokens: Optional[int] = None, timeout_s: Optional[float] = None):
+        """流式对话：逐段 yield 文本增量；失败抛 LLMError。"""
+        if not self.cfg.ready:
+            raise LLMError("AI 未配置：请在设置页填写 base_url / model（以及 api_key）")
+        candidates = _chat_candidates(self.cfg.base_url)
+        if not candidates:
+            raise LLMError("AI base_url 为空")
+        headers = {"Content-Type": "application/json"}
+        if self.cfg.api_key:
+            headers["Authorization"] = "Bearer " + self.cfg.api_key
+        payload = {
+            "model": self.cfg.model,
+            "messages": messages,
+            "temperature": float(self.cfg.temperature),
+            "max_tokens": int(max_tokens or self.cfg.max_tokens),
+            "stream": True,
+        }
+        client = httpx.Client(
+            timeout=float(timeout_s or self.cfg.timeout_s),
+            trust_env=self.cfg.use_system_proxy,
+        )
+        try:
+            for idx, base in enumerate(candidates):
+                url = base + "/chat/completions"
+                try:
+                    with client.stream("POST", url, json=payload, headers=headers) as resp:
+                        if resp.status_code in (404, 405) and idx < len(candidates) - 1:
+                            continue
+                        if resp.status_code >= 400:
+                            body = resp.read().decode("utf-8", "ignore")[:300]
+                            raise LLMError("模型服务返回 %s（请求 %s）: %s" % (resp.status_code, url, body))
+                        for line in resp.iter_lines():
+                            if not line or not line.startswith("data:"):
+                                continue
+                            data = line[5:].strip()
+                            if data == "[DONE]":
+                                return
+                            try:
+                                obj = json.loads(data)
+                                delta = obj["choices"][0].get("delta") or {}
+                            except (ValueError, KeyError, IndexError, TypeError):
+                                continue
+                            text = delta.get("content")
+                            if text:
+                                yield str(text)
+                        return
+                except httpx.HTTPError as exc:
+                    raise LLMError("无法连接模型服务 " + url + ": " + str(exc)) from exc
+        finally:
+            client.close()
 
     def ping(self) -> dict:
         """连通性测试：最小对话一次。"""

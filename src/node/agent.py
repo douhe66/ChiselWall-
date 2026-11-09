@@ -489,6 +489,12 @@ class NodeAgent:
             cfg.use_system_proxy = bool(data.get("use_system_proxy"))
         if "system_prompt" in data and data.get("system_prompt") is not None:
             cfg.system_prompt = str(data.get("system_prompt")).strip()
+        if "max_context_chars" in data and data.get("max_context_chars") is not None:
+            cfg.max_context_chars = max(4000, min(100000, int(data.get("max_context_chars"))))
+        if "top_n" in data and data.get("top_n") is not None:
+            cfg.top_n = max(4, min(60, int(data.get("top_n"))))
+        if "max_tokens" in data and data.get("max_tokens") is not None:
+            cfg.max_tokens = max(500, min(16000, int(data.get("max_tokens"))))
         cfg.enabled = bool(cfg.enabled and cfg.base_url and cfg.model)
         self.ai_store.save(cfg)
         return cfg.public_dict()
@@ -534,14 +540,31 @@ class NodeAgent:
                     chunks = []
                 if chunks:
                     full = "\n\n".join(chunks)
-                    if len(full) <= 5000:
-                        text = full  # 小笔记给全文（含代码块），避免片段截断丢内容
+                    full_doc = len(full) <= 12000
+                    if full_doc:
+                        text = full  # 中小笔记给全文（含代码块）
                     else:
-                        text = select_local_window(chunks, int(h.get("chunk_seq") or 0))
+                        # 长文档：开头目录/背景 + 命中块上下文 + 结尾，尽量不把有效信息截掉
+                        budget = max(5000, min(14000, int(getattr(self.ai_config, "max_context_chars", 24000) * 0.55)))
+                        head = full[:1800]
+                        window = select_local_window(
+                            chunks, int(h.get("chunk_seq") or 0),
+                            max_chars=max(3000, budget - len(head) - 400),
+                        )
+                        tail = full[-700:] if len(full) > 700 else ""
+                        parts = [head]
+                        if window and window not in head:
+                            parts.append("……（中间省略）……")
+                            parts.append(window)
+                        if tail and tail not in "\n\n".join(parts):
+                            parts.append("……（结尾）……")
+                            parts.append(tail)
+                        text = "\n\n".join(parts)[:budget]
                     if text:
                         h["snippet_text"] = text
                         h["context_full"] = True
-                        h["context_full_doc"] = len(full) <= 5000
+                        h["context_full_doc"] = full_doc
+                        h["context_chars"] = len(text)
             out.append(h)
         return out
 
@@ -669,7 +692,8 @@ class NodeAgent:
         if answer.get("answer"):
             self.ask_sessions.append(sid, "assistant", str(answer.get("answer")),
                                    {"citations": answer.get("citations") or [], "status": answer.get("status"),
-                                    "elapsed_ms": answer.get("elapsed_ms") or 0, "model": answer.get("model") or ""})
+                                    "elapsed_ms": answer.get("elapsed_ms") or 0, "model": answer.get("model") or "",
+                                    "context_chars": answer.get("context_chars") or 0})
         return {"ok": answer.get("status") == "ready", "answer": answer, "session": self.ask_sessions.get(sid),
                 "turns": self.ask_sessions.turns(sid)}
 
@@ -702,9 +726,95 @@ class NodeAgent:
         if answer.get("answer"):
             self.ask_sessions.append(sid, "assistant", str(answer.get("answer")),
                                    {"citations": answer.get("citations") or [], "status": answer.get("status"),
-                                    "elapsed_ms": answer.get("elapsed_ms") or 0, "model": answer.get("model") or ""})
+                                    "elapsed_ms": answer.get("elapsed_ms") or 0, "model": answer.get("model") or "",
+                                    "context_chars": answer.get("context_chars") or 0})
         return {"ok": True, "answer": answer, "aggregated": aggregated, "session": self.ask_sessions.get(sid),
                 "turns": self.ask_sessions.turns(sid)}
+
+    def ask_session_summarize_stream(self, sid: str):
+        """流式综合当前会话最新搜索结果。"""
+        from ai.rag import stream_answer
+
+        session = self.ask_sessions.get(sid)
+        if session is None:
+            yield {"type": "error", "error": "会话不存在"}
+            return
+        turns = self.ask_sessions.turns(sid)
+        target = None
+        for turn in reversed(turns):
+            if turn.get("role") == "user" and (turn.get("payload") or {}).get("aggregated"):
+                target = turn
+                break
+        if target is None:
+            yield {"type": "error", "error": "本会话还没有可综合的搜索结果"}
+            return
+        aggregated = (target.get("payload") or {}).get("aggregated") or []
+        aggregated = self.enrich_local_context(aggregated)
+        history = self._pair_history([t for t in turns if int(t["id"]) < int(target["id"])])
+        for ev in stream_answer(str(target.get("content") or ""), aggregated, self.ai_config, history=history):
+            if ev.get("type") == "done":
+                text = str(ev.get("text") or "")
+                if text:
+                    self.ask_sessions.append(sid, "assistant", text, {
+                        "citations": ev.get("citations") or [],
+                        "status": "ready",
+                        "elapsed_ms": ev.get("elapsed_ms") or 0,
+                        "model": ev.get("model") or "",
+                        "context_chars": ev.get("context_chars") or 0,
+                    })
+                ev["turns"] = self.ask_sessions.turns(sid)
+                ev["session"] = self.ask_sessions.get(sid)
+            yield ev
+
+    def ask_session_followup_stream(self, sid: str, text: str, summarize: bool = True):
+        """流式追问；summarize=False 时只记录追问。"""
+        from ai.rag import stream_answer
+
+        session = self.ask_sessions.get(sid)
+        if session is None:
+            yield {"type": "error", "error": "会话不存在"}
+            return
+        question = (text or "").strip()
+        if not question:
+            yield {"type": "error", "error": "追问不能为空"}
+            return
+        turns = self.ask_sessions.turns(sid)
+        aggregated: list = []
+        for turn in reversed(turns):
+            if turn.get("role") == "user":
+                payload = turn.get("payload") or {}
+                aggregated = payload.get("aggregated") or []
+                if not aggregated and payload.get("qid"):
+                    view = self.bus.view(str(payload["qid"])) or {}
+                    aggregated = view.get("aggregated") or []
+                if aggregated:
+                    break
+        if not aggregated:
+            yield {"type": "error", "error": "上一轮还没有可用的检索结果，请等本轮完成后再追问"}
+            return
+        history = self._pair_history(turns)
+        aggregated = self.enrich_local_context(aggregated)
+        user_turn = self.ask_sessions.append(sid, "user", question, {"aggregated": aggregated[:30]})
+        if not summarize:
+            yield {"type": "done", "text": "", "user_turn": user_turn, "answer": None,
+                   "turns": self.ask_sessions.turns(sid), "session": self.ask_sessions.get(sid)}
+            return
+        for ev in stream_answer(question, aggregated, self.ai_config, history=history):
+            if ev.get("type") == "start":
+                ev["user_turn"] = user_turn
+            if ev.get("type") == "done":
+                answer = str(ev.get("text") or "")
+                if answer:
+                    self.ask_sessions.append(sid, "assistant", answer, {
+                        "citations": ev.get("citations") or [],
+                        "status": "ready",
+                        "elapsed_ms": ev.get("elapsed_ms") or 0,
+                        "model": ev.get("model") or "",
+                        "context_chars": ev.get("context_chars") or 0,
+                    })
+                ev["turns"] = self.ask_sessions.turns(sid)
+                ev["session"] = self.ask_sessions.get(sid)
+            yield ev
 
     # ---- M8 AI 会话 ----
     def ai_session_list(self) -> list[dict]:

@@ -506,3 +506,5 @@ textarea { resize: vertical; line-height: 1.6; }
   .ask-page .chat-layout { grid-template-columns: 1fr; }
   .ask-group-panel { grid-template-columns: 1fr; }
 }
+.stream-cursor { display:inline-block; width:7px; height:14px; background:var(--accent); vertical-align:-2px; margin-left:2px; animation: blink 1s steps(2,end) infinite; }
+@keyframes blink { 50% { opacity: 0; } }

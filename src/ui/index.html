@@ -318,7 +318,7 @@
           <div class="chat-toolbar">
             <strong>{{ askSession.title }}</strong>
             <span class="muted small">先看右侧搜索结果，再点「AI 综合」生成回答</span>
-            <button class="btn primary small" @click="summarizeAskSession" :disabled="askSummarizing || !askLatestHits().length">{{ askSummarizing ? 'AI 综合中…' : 'AI 综合' }}</button>
+            <button class="btn primary small" @click="summarizeAskSession" :disabled="askSummarizing || askSending || !askLatestHits().length">{{ askSummarizing ? 'AI 综合中…' : 'AI 综合' }}</button>
           </div>
           <div class="chat-messages">
             <div v-if="!askTurns.length" class="muted small">这个会话还没有提问。</div>
@@ -332,14 +332,22 @@
                 <span v-if="t.payload.search_text && t.payload.search_text !== t.content" class="muted small">实际检索：{{ t.payload.search_text }}</span>
               </div>
               <div v-if="t.role === 'assistant' && t.payload" class="ask-turn-meta">
-                <span v-if="t.payload.elapsed_ms" class="muted small">AI 用时 {{ t.payload.elapsed_ms }}ms · {{ t.payload.model }}</span>
+                <span v-if="t.payload.elapsed_ms" class="muted small">AI 用时 {{ t.payload.elapsed_ms }}ms · {{ t.payload.model }}<template v-if="t.payload.context_chars"> · 上下文 {{ t.payload.context_chars }} 字</template></span>
               </div>
               <div v-if="t.role === 'assistant' && t.payload && (t.payload.citations || []).length" class="chat-citations" style="padding:6px 0 0">
-                <span class="muted small">引用：</span>
+                <span class="muted small">引用（本轮）：</span>
                 <span v-for="c in t.payload.citations" :key="c.index" class="badge">[{{ c.index }}] {{ c.title }}</span>
               </div>
               <div v-if="t.role === 'user' && t.payload && (t.payload.aggregated || []).length" class="muted small">本轮命中 {{ t.payload.aggregated.length }} 处（右侧查看原文）</div>
 
+            </div>
+            <div v-if="askStream && askStream.active" class="chat-msg assistant streaming">
+              <div class="chat-role">回答 · 生成中</div>
+              <div class="md-preview" v-html="renderMarkdown(askStream.text || '正在组织回答…')"></div>
+              <div v-if="(askStream.citations || []).length" class="chat-citations" style="padding:6px 0 0">
+                <span v-for="c in askStream.citations" :key="c.index" class="badge">[{{ c.index }}] {{ c.title }}</span>
+              </div>
+              <span class="stream-cursor"></span>
             </div>
             <div v-if="askSending" class="muted small">{{ askProgress || '正在收集同事回答…' }}</div>
             <p v-if="askError" class="warn">{{ askError }}</p>
@@ -371,7 +379,7 @@
         <div class="ask-results-head">
           <strong>搜索结果</strong>
           <span class="badge">{{ askLatestHits().length }} 处</span>
-          <button class="btn small" @click="summarizeAskSession" :disabled="askSummarizing || !askLatestHits().length">{{ askSummarizing ? 'AI 综合中…' : 'AI 综合' }}</button>
+          <button class="btn small" @click="summarizeAskSession" :disabled="askSummarizing || askSending || !askLatestHits().length">{{ askSummarizing ? 'AI 综合中…' : 'AI 综合' }}</button>
         </div>
         <div v-if="askLatestPayload()" class="ask-results-meta">
           <span v-if="askLatestPayload().elapsed_ms" class="badge">耗时 {{ askLatestPayload().elapsed_ms }}ms</span>
@@ -465,6 +473,11 @@
         <div class="row">
           <input v-model.number="aiForm.temperature" type="number" step="0.1" min="0" max="2" style="max-width:120px" placeholder="temperature">
           <label class="muted small"><input type="checkbox" v-model="aiForm.use_system_proxy"> 使用系统代理（访问外网模型时可能需要）</label>
+        </div>
+        <div class="row">
+          <label class="muted small">上下文预算（字符）<input v-model.number="aiForm.max_context_chars" type="number" min="4000" max="100000" step="1000" style="max-width:130px;margin-left:5px"></label>
+          <label class="muted small">片段数<input v-model.number="aiForm.top_n" type="number" min="4" max="60" style="max-width:90px;margin-left:5px"></label>
+          <label class="muted small">回答上限（token）<input v-model.number="aiForm.max_tokens" type="number" min="500" max="16000" step="500" style="max-width:120px;margin-left:5px"></label>
           <button class="btn" @click="saveAIConfig" :disabled="aiSaving">{{ aiSaving ? '保存中…' : '保存' }}</button>
           <button class="btn" @click="testAI" :disabled="aiTesting">{{ aiTesting ? '测试中…' : '测试连接' }}</button>
         </div>
