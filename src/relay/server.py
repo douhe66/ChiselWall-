@@ -349,6 +349,8 @@ def create_app(
                         "qid": qid,
                         "asker": user,
                         "text": str(msg.get("text") or ""),
+                        "question": str(msg.get("question") or msg.get("text") or ""),
+                        "plan": msg.get("plan"),
                         "deadline_ms": int(msg.get("deadline_ms") or 5000),
                         "groups": groups,
                     }

@@ -18,6 +18,11 @@ from typing import Any, Awaitable, Callable, Optional
 
 log = logging.getLogger("chiselwall.bus")
 
+try:
+    import websockets
+except ImportError:  # Linux 缺依赖时不要静默死任务；统一在 info()/UI 暴露
+    websockets = None  # type: ignore[assignment]
+
 ALL_GROUP = "全员组"
 
 
@@ -40,6 +45,7 @@ class AskItem:
     created_at: float
     deadline_at: float
     search_text: str = ""
+    plan: Optional[dict] = None
     expected: int = 0
     answers: list[dict] = field(default_factory=list)
     error: Optional[str] = None
@@ -74,13 +80,14 @@ class AskService:
         self.deadline_ms = deadline_ms
         self.items: dict[str, AskItem] = {}
 
-    def create(self, text: str, groups: list[str], search_text: str = "") -> AskItem:
+    def create(self, text: str, groups: list[str], search_text: str = "", plan: Optional[dict] = None) -> AskItem:
         now = time.monotonic()
         item = AskItem(
             qid=uuid.uuid4().hex[:16],
             text=text,
             groups=groups,
             search_text=search_text or text,
+            plan=plan,
             created_at=now,
             deadline_at=now + self.deadline_ms / 1000.0,
         )
@@ -125,6 +132,7 @@ class AskService:
             "qid": qid,
             "text": it.text,
             "search_text": it.search_text,
+            "plan": it.plan,
             "groups": it.groups,
             "status": status,
             "error": it.error,
@@ -215,13 +223,22 @@ class RelayClient:
         self.connected = False
         self.online: list[dict] = []
         self.known_groups: list[dict] = []
+        self.last_error = ""
         self._group_waiters: dict[str, asyncio.Future] = {}
         self._ws: Any = None
         self._stop = asyncio.Event()
         self._task: Optional[asyncio.Task] = None
 
+    @property
+    def dependency_ok(self) -> bool:
+        return websockets is not None
+
     def start(self) -> None:
         if not self.cfg.enabled or not self.cfg.relay_url:
+            return
+        if websockets is None:
+            self.last_error = "缺少 websockets 依赖：请执行 pip install -r requirements.txt 后重启"
+            log.error(self.last_error)
             return
         self._task = asyncio.create_task(self._run(), name="chiselwall-relay")
 
@@ -274,8 +291,10 @@ class RelayClient:
             return
 
     async def _run(self) -> None:
-        import websockets
-
+        if websockets is None:
+            self.last_error = "缺少 websockets 依赖：请执行 pip install -r requirements.txt 后重启"
+            log.error(self.last_error)
+            return
         backoff = 1.0
         while not self._stop.is_set():
             try:
@@ -293,6 +312,7 @@ class RelayClient:
                         )
                     )
                     self.connected = True
+                    self.last_error = ""
                     backoff = 1.0
                     hb = asyncio.create_task(self._heartbeat(ws))
                     try:
@@ -315,6 +335,7 @@ class RelayClient:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                self.last_error = str(exc) or exc.__class__.__name__
                 log.warning("relay 连接失败：%s（%.0fs 后重连）", exc, backoff)
             finally:
                 self.connected = False
@@ -328,15 +349,55 @@ class RelayClient:
             backoff = min(backoff * 2.0, 30.0)
 
 
+async def probe_relay(url: str, nick: str, token: str, groups: list[str], timeout_s: float = 5.0) -> dict:
+    """不落盘、不改配置的一次性 relay 握手测试（设置页“测试连接”）。"""
+    if websockets is None:
+        raise ValueError("缺少 websockets 依赖：请执行 pip install -r requirements.txt 后重启")
+    url = (url or "").strip()
+    if not url.startswith(("ws://", "wss://")):
+        raise ValueError("Relay 地址需以 ws:// 或 wss:// 开头")
+    nick = (nick or "").strip()
+    if not nick:
+        raise ValueError("请先填写昵称")
+    started = time.monotonic()
+    try:
+        async with websockets.connect(url, max_size=4 * 1024 * 1024, open_timeout=timeout_s) as ws:
+            await ws.send(json.dumps({
+                "type": "hello", "user": nick, "token": token, "groups": groups or [ALL_GROUP],
+            }, ensure_ascii=False))
+            raw = await asyncio.wait_for(ws.recv(), timeout=timeout_s)
+    except asyncio.TimeoutError:
+        raise ValueError("Relay 握手超时（%.0fs）" % timeout_s) from None
+    except Exception as exc:
+        raise ValueError("无法连接 Relay：%s" % exc) from exc
+    try:
+        msg = json.loads(raw)
+    except (TypeError, ValueError):
+        raise ValueError("Relay 返回了无法解析的握手响应") from None
+    if msg.get("type") == "error":
+        raise ValueError(str(msg.get("error") or "Relay 拒绝连接"))
+    if msg.get("type") != "hello_ok":
+        raise ValueError("Relay 握手异常：%s" % msg.get("type"))
+    return {
+        "ok": True,
+        "nick": msg.get("user") or nick,
+        "online": len(msg.get("online") or []),
+        "groups": len(msg.get("groups") or []),
+        "elapsed_ms": round((time.monotonic() - started) * 1000),
+    }
+
+
 class NodeBus:
     """节点广播总线：提问发起 + 对端应答 + 结果视图。"""
 
     def __init__(self, cfg: RelayConfig, searcher: Any, search_fn: Any = None,
-                 rewrite_fn: Any = None) -> None:
+                 rewrite_fn: Any = None, plan_fn: Any = None, local_searcher: Any = None) -> None:
         self.cfg = cfg
         self.searcher = searcher
         self.search_fn = search_fn
         self.rewrite_fn = rewrite_fn
+        self.plan_fn = plan_fn
+        self.local_searcher = local_searcher or searcher
         self.asks = AskService(deadline_ms=cfg.ask_deadline_ms)
         self.client = RelayClient(cfg, self._on_message)
         self._inbound_buckets: dict[str, TokenBucket] = {}
@@ -372,6 +433,8 @@ class NodeBus:
             "online": self.online,
             "known_groups": self.client.known_groups,
             "server_groups": self.client.known_groups,
+            "last_error": self.client.last_error,
+            "dependency_ok": self.client.dependency_ok,
         }
 
     async def create_group(self, name: str, description: str = "") -> dict:
@@ -391,8 +454,18 @@ class NodeBus:
         gs = [g for g in (groups or self.cfg.groups) if g] or [ALL_GROUP]
         original = text
         refined = text
-        if self.rewrite_fn is not None:
-            # 原查询在本地已有强命中时，不调用 LLM（省 2–3 秒，也避免改写退化）
+        plan = None
+        plan_dict = None
+        if self.plan_fn is not None:
+            # 发送前生成结构化计划；未启用/未配置/失败都回退原问题，不调用旧改写。
+            try:
+                plan = await asyncio.to_thread(self.plan_fn, text)
+            except Exception:
+                log.exception("检索计划生成失败，回退原问题")
+                plan = None
+            plan_dict = plan.to_dict() if hasattr(plan, "to_dict") else None
+        elif self.rewrite_fn is not None:
+            # 兼容旧调用/测试：仅在未提供 plan_fn 时保留旧的单查询改写。
             try:
                 probe = await asyncio.to_thread(self.searcher.search, text, 5)
             except Exception:
@@ -405,14 +478,18 @@ class NodeBus:
                     variants = []
             if variants:
                 refined = self._pick_broadcast_query(text, [str(v).strip() for v in variants if str(v).strip()])
-        item = self.asks.create(original, gs, search_text=refined)
-        # 本机也参与检索；若已改写，直接搜精炼词（避免二次改写）
+        send_text = original if self.plan_fn is not None else refined
+        item = self.asks.create(original, gs, search_text=send_text, plan=plan_dict)
+        # 本机检索与远端使用同一份计划；没有计划则原问题普通检索。
+        local_started = time.monotonic()
         try:
-            if refined != original:
-                search_call = self.searcher.search
+            if plan is not None:
+                from ai.query_plan import evaluate_plan
+
+                local_hits = await asyncio.to_thread(evaluate_plan, self.local_searcher, plan, 8)
             else:
-                search_call = self.search_fn or self.searcher.search
-            local_hits = await asyncio.to_thread(search_call, refined, 8)
+                # 计划未生成时直接用本地原问题检索，避免在回退路径上二次调用 LLM
+                local_hits = await asyncio.to_thread(self.local_searcher.search, refined, 8)
         except Exception:
             log.exception("本机检索失败")
             local_hits = []
@@ -420,7 +497,7 @@ class NodeBus:
             item.qid,
             {
                 "node": self.cfg.nick,
-                "elapsed_ms": 0,
+                "elapsed_ms": round((time.monotonic() - local_started) * 1000),
                 "hits": [h.to_dict() for h in local_hits],
                 "local": True,
             },
@@ -429,15 +506,16 @@ class NodeBus:
             {
                 "type": "query",
                 "qid": item.qid,
-                "text": refined,
+                "text": send_text,
                 "question": original,
+                "plan": plan_dict,
                 "groups": gs,
                 "deadline_ms": self.cfg.ask_deadline_ms,
             }
         )
         if not ok:
             raise ValueError("relay 发送失败（连接已断开）")
-        return {"qid": item.qid, "groups": gs, "deadline_ms": self.cfg.ask_deadline_ms}
+        return {"qid": item.qid, "groups": gs, "deadline_ms": self.cfg.ask_deadline_ms, "plan": plan_dict}
 
     def view(self, qid: str) -> Optional[dict]:
         return self.asks.view(qid, online=self.online)
@@ -529,8 +607,16 @@ class NodeBus:
             return
         async with self._semaphore:
             started = time.monotonic()
+            plan = msg.get("plan")
             try:
-                hits = await asyncio.to_thread(self.searcher.search, str(msg.get("text") or ""), 8)
+                if plan:
+                    from ai.query_plan import evaluate_plan
+
+                    hits = await asyncio.to_thread(evaluate_plan, self.searcher, plan, 8)
+                    if not hits:
+                        hits = await asyncio.to_thread(self.searcher.search, str(msg.get("text") or ""), 8)
+                else:
+                    hits = await asyncio.to_thread(self.searcher.search, str(msg.get("text") or ""), 8)
             except Exception:
                 log.exception("本地检索失败（查询来自 %s）", asker)
                 hits = []

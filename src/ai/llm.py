@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import re
 import time
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -29,6 +32,57 @@ class LLMError(Exception):
     """LLM 调用失败（连接/鉴权/超时/返回格式）。"""
 
 
+_PLACEHOLDER_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+_HEADER_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+
+
+def parse_placeholders(template: str) -> list[str]:
+    """按出现顺序返回 base_url 模板中的 ${name}（去重）。"""
+    out: list[str] = []
+    for match in _PLACEHOLDER_RE.finditer(template or ""):
+        name = match.group(1)
+        if name not in out:
+            out.append(name)
+    return out
+
+
+def _normalize_placeholder_files(raw: Any) -> dict[str, str]:
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str] = {}
+    for k, v in raw.items():
+        name = str(k or "").strip()
+        value = str(v or "").strip()
+        if name and value:
+            out[name] = value
+    return out
+
+
+def _normalize_headers(raw: Any) -> list[dict[str, str]]:
+    """接受 [{name,value}] 或 {name: value}，返回去重后的列表。"""
+    if isinstance(raw, dict):
+        raw = [{"name": k, "value": v} for k, v in raw.items()]
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        value = str(item.get("value") or "").strip()
+        if not name or not value:
+            continue
+        low = name.lower()
+        if low in ("content-type",) or low in seen:
+            continue
+        if not _HEADER_NAME_RE.match(name) or "\r" in value or "\n" in value:
+            continue
+        seen.add(low)
+        out.append({"name": name, "value": value})
+    return out
+
+
 @dataclass
 class AIConfig:
     enabled: bool = False
@@ -42,17 +96,33 @@ class AIConfig:
     use_system_proxy: bool = False  # 默认直连（内网模型）；访问外网模型可开启
     max_tokens: int = 4000          # 回答长度上限（流式输出，长答案不再被截断）
     system_prompt: str = ""         # 留空 = 使用内置默认提示词
+    # 自定义网关：base_url 为模板；占位符 -> 本地文件路径（每次请求读取）
+    mode: str = "openai"            # openai | gateway
+    placeholder_files: dict[str, str] = field(default_factory=dict)
+    headers: list[dict[str, str]] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AIConfig":
         allowed = {f.name for f in fields(cls)}
-        return cls(**{k: v for k, v in data.items() if k in allowed})
+        cfg = cls(**{k: v for k, v in data.items() if k in allowed})
+        cfg.mode = "gateway" if str(cfg.mode).lower() == "gateway" else "openai"
+        cfg.placeholder_files = _normalize_placeholder_files(cfg.placeholder_files)
+        cfg.headers = _normalize_headers(cfg.headers)
+        return cfg
 
     def public_dict(self) -> dict[str, Any]:
         """返回给前端的配置（api_key 只显示是否已设置与掩码）。"""
         return {
             "enabled": self.enabled,
             "base_url": self.base_url,
+            "mode": self.mode,
+            "placeholders": parse_placeholders(self.base_url) if self.mode == "gateway" else [],
+            "placeholder_files": dict(self.placeholder_files),
+            "headers": [
+                {"name": h.get("name", ""), "has_value": bool(h.get("value")),
+                 "masked_value": ("****" + str(h.get("value"))[-4:]) if len(str(h.get("value") or "")) > 4 else ("****" if h.get("value") else "")}
+                for h in self.headers
+            ],
             "model": self.model,
             "temperature": self.temperature,
             "has_key": bool(self.api_key),
@@ -128,6 +198,110 @@ def _chat_candidates(base: str) -> list[str]:
     return out
 
 
+def _placeholder_config_dir() -> Path:
+    return Path(os.environ.get("CHISELWALL_CONFIG_DIR", "~/.chiselwall")).expanduser()
+
+
+def _read_placeholder_value(name: str, raw_path: str) -> str:
+    if not raw_path:
+        raise LLMError("占位符 ${%s} 未配置文件路径" % name)
+    p = Path(raw_path).expanduser()
+    if not p.is_absolute():
+        p = _placeholder_config_dir() / p
+    try:
+        value = p.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise LLMError("读取占位符 ${%s} 失败（%s）：%s" % (name, p, exc)) from exc
+    if not value:
+        raise LLMError("占位符 ${%s} 的文件为空：%s" % (name, p))
+    if len(value) > 4096:
+        raise LLMError("占位符 ${%s} 的文件内容过长（>4096 字符）：%s" % (name, p))
+    if "\n" in value or "\r" in value or "\x00" in value:
+        raise LLMError("占位符 ${%s} 的文件内容不能包含换行/控制字符：%s" % (name, p))
+    return value
+
+
+def _collapse_url_slashes(url: str) -> str:
+    if "://" not in url:
+        return url
+    scheme, rest = url.split("://", 1)
+    return scheme + "://" + re.sub(r"/{2,}", "/", rest)
+
+
+def resolve_gateway_base(template: str, placeholder_files: dict[str, str]) -> str:
+    """读取占位符文件并替换 base_url 模板；无占位符时原样返回。"""
+    base = (template or "").strip()
+    if not base:
+        raise LLMError("自定义网关的 base_url 为空")
+    for name in parse_placeholders(base):
+        value = _read_placeholder_value(name, str((placeholder_files or {}).get(name) or ""))
+        base = base.replace("${" + name + "}", value)
+    if "${" in base:
+        raise LLMError("base_url 中仍有未解析的占位符：" + base)
+    base = _collapse_url_slashes(base).rstrip("/")
+    parsed = urlsplit(base)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise LLMError("自定义网关解析后的 base_url 不是合法 http(s) 地址：" + base)
+    return base
+
+
+def request_urls(cfg: AIConfig) -> list[str]:
+    """标准模式保留 /v1 兼容；网关模式使用模板解析后的精确前缀。"""
+    if cfg.mode == "gateway":
+        base = resolve_gateway_base(cfg.base_url, cfg.placeholder_files)
+        if base.endswith("/chat/completions"):
+            return [base]
+        return [base + "/chat/completions"]
+    return [base + "/chat/completions" for base in _chat_candidates(cfg.base_url)]
+
+
+def merge_headers(existing: list[dict[str, str]], incoming: Any) -> list[dict[str, str]]:
+    """UI 空白值表示保留同名旧值；删除行表示删除；空列表表示清空。"""
+    old = {str(h.get("name", "")).lower(): str(h.get("value", "")) for h in (existing or [])}
+    if isinstance(incoming, dict):
+        incoming = [{"name": k, "value": v} for k, v in incoming.items()]
+    if not isinstance(incoming, list):
+        return list(existing or [])
+    merged: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in incoming:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        value = str(item.get("value") or "").strip()
+        low = name.lower()
+        if not value:
+            value = old.get(low, "")
+        if not name or not value or low in seen or low == "content-type":
+            continue
+        if not _HEADER_NAME_RE.match(name) or "\r" in value or "\n" in value:
+            continue
+        seen.add(low)
+        merged.append({"name": name, "value": value})
+    return merged
+
+
+def request_headers(cfg: AIConfig) -> dict[str, str]:
+    """默认 JSON + Bearer；自定义头覆盖默认值（Authorization 显式优先）。"""
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    if cfg.api_key:
+        headers["Authorization"] = "Bearer " + cfg.api_key
+    for item in cfg.headers or []:
+        name = str(item.get("name") or "").strip()
+        value = str(item.get("value") or "").strip()
+        if not name or not value:
+            continue
+        if not _HEADER_NAME_RE.match(name) or "\r" in value or "\n" in value:
+            raise LLMError("非法请求头：" + name)
+        if name.lower() == "content-type":
+            continue
+        if name.lower() == "authorization":
+            headers.pop("Authorization", None)
+            headers.pop("authorization", None)
+        headers[name] = value
+    return headers
+
+
 class LLMClient:
     """OpenAI 兼容 /chat/completions 客户端（同步，供线程池调用）。"""
 
@@ -138,12 +312,10 @@ class LLMClient:
         """返回 {text, model, elapsed_ms, usage}；失败抛 LLMError。"""
         if not self.cfg.ready:
             raise LLMError("AI 未配置：请在设置页填写 base_url / model（以及 api_key）")
-        candidates = _chat_candidates(self.cfg.base_url)
-        if not candidates:
+        urls = request_urls(self.cfg)
+        if not urls:
             raise LLMError("AI base_url 为空")
-        headers = {"Content-Type": "application/json"}
-        if self.cfg.api_key:
-            headers["Authorization"] = "Bearer " + self.cfg.api_key
+        headers = request_headers(self.cfg)
         payload = {
             "model": self.cfg.model,
             "messages": messages,
@@ -159,14 +331,13 @@ class LLMClient:
             trust_env=self.cfg.use_system_proxy,
         )
         try:
-            for base in candidates:
-                url = base + "/chat/completions"
+            for idx, url in enumerate(urls):
                 attempted.append(url)
                 try:
                     resp = client.post(url, json=payload, headers=headers)
                 except httpx.HTTPError as exc:
                     raise LLMError("无法连接模型服务 " + url + ": " + str(exc)) from exc
-                if resp.status_code in (404, 405) and base is not candidates[-1]:
+                if resp.status_code in (404, 405) and idx < len(urls) - 1:
                     continue  # 路径不对：换另一种 base_url 形态重试
                 break
         finally:
@@ -195,12 +366,10 @@ class LLMClient:
         """流式对话：逐段 yield 文本增量；失败抛 LLMError。"""
         if not self.cfg.ready:
             raise LLMError("AI 未配置：请在设置页填写 base_url / model（以及 api_key）")
-        candidates = _chat_candidates(self.cfg.base_url)
-        if not candidates:
+        urls = request_urls(self.cfg)
+        if not urls:
             raise LLMError("AI base_url 为空")
-        headers = {"Content-Type": "application/json"}
-        if self.cfg.api_key:
-            headers["Authorization"] = "Bearer " + self.cfg.api_key
+        headers = request_headers(self.cfg)
         payload = {
             "model": self.cfg.model,
             "messages": messages,
@@ -213,11 +382,10 @@ class LLMClient:
             trust_env=self.cfg.use_system_proxy,
         )
         try:
-            for idx, base in enumerate(candidates):
-                url = base + "/chat/completions"
+            for idx, url in enumerate(urls):
                 try:
                     with client.stream("POST", url, json=payload, headers=headers) as resp:
-                        if resp.status_code in (404, 405) and idx < len(candidates) - 1:
+                        if resp.status_code in (404, 405) and idx < len(urls) - 1:
                             continue
                         if resp.status_code >= 400:
                             body = resp.read().decode("utf-8", "ignore")[:300]

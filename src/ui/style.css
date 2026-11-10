@@ -107,8 +107,9 @@ a:hover { text-decoration: underline; }
 /* Shell */
 #app { display: flex; min-height: 100vh; }
 .rail {
-  width: 232px;
-  flex: 0 0 232px;
+  width: 196px;
+  flex: 0 0 196px;
+  transition: width 180ms ease, flex-basis 180ms ease;
   position: sticky;
   top: 0;
   height: 100vh;
@@ -122,6 +123,10 @@ a:hover { text-decoration: underline; }
   z-index: 20;
 }
 [data-theme="light"] .rail { background: linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(248, 250, 253, 0.9)); }
+.rail-toggle { appearance:none; border:1px solid var(--border); background:transparent; color:var(--muted); border-radius:8px; padding:6px 9px; display:flex; align-items:center; justify-content:center; gap:6px; font-family:inherit; font-size:11px; cursor:pointer; margin: 0 4px 8px; transition: color 140ms ease, border-color 140ms ease, background 140ms ease; }
+.rail-toggle:hover { color:var(--text); border-color:var(--border-strong); background:rgba(148,163,184,.06); }
+.rail-toggle svg { width:14px; height:14px; flex:0 0 auto; }
+.rail-toggle-text { white-space:nowrap; }
 .brand { display: flex; align-items: center; gap: 11px; padding: 4px 8px 18px; }
 .brand-mark {
   width: 38px; height: 38px; border-radius: 11px;
@@ -376,6 +381,7 @@ textarea { resize: vertical; line-height: 1.6; }
 .token-card p { margin: 0 0 14px; }
 .token-card input { width: 100%; margin-bottom: 10px; }
 .token-card .btn { width: 100%; }
+.token-error { margin: 8px 0; font-size: 12px; }
 
 /* Responsive */
 @media (max-width: 1280px) {
@@ -529,3 +535,43 @@ textarea { resize: vertical; line-height: 1.6; }
 /* Answer box can be widened by dragging its right edge */
 .chat-msg.assistant { resize: horizontal; overflow: auto; min-width: 280px; max-width: 96%; }
 @media (max-width: 760px) { .chat-msg.assistant { resize: none; max-width: 100%; } }
+/* AI 自定义网关 */
+.placeholder-box { border:1px solid var(--border); border-radius:8px; padding:8px 10px; margin:6px 0 10px; background: rgba(148,163,184,.04); }
+.placeholder-row { align-items:center; }
+.placeholder-row code { flex:0 0 auto; color:var(--accent); font-size:11px; background: rgba(45,212,191,.08); padding:2px 7px; border-radius:5px; }
+.placeholder-row input { flex:1; min-width:200px; }
+.header-row input:first-child { max-width:220px; }
+.header-row input:nth-child(2) { flex:1; }
+.ask-refresh { display:flex; align-items:center; gap:4px; white-space:nowrap; }
+.group-setting-row { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.group-setting-row label { flex:1; min-width:0; }
+/* Collapsible rail */
+@media (min-width: 761px) {
+  .rail.collapsed { width: 68px; flex-basis: 68px; padding-left: 8px; padding-right: 8px; }
+  .rail.collapsed .brand { justify-content: center; padding-left: 0; padding-right: 0; }
+  .rail.collapsed .brand-text,
+  .rail.collapsed .nav-label,
+  .rail.collapsed .nav-text,
+  .rail.collapsed .nav-kbd,
+  .rail.collapsed .rail-status-text,
+  .rail.collapsed .rail-footer .ver,
+  .rail.collapsed .rail-toggle-text { display: none; }
+  .rail.collapsed .nav-item { justify-content: center; padding-left: 0; padding-right: 0; }
+  .rail.collapsed .nav-item.active::before { display: none; }
+  .rail.collapsed .rail-status { justify-content: center; padding: 10px 0; }
+  .rail.collapsed .rail-footer { justify-content: center; }
+  .rail.collapsed .rail-toggle { margin-left: 0; margin-right: 0; }
+}
+@media (max-width: 760px) { .rail-toggle { display: none; } }
+/* Ask page heading: slightly smaller than generic page titles */
+.ask-page .page-head { margin-bottom: 12px; }
+.ask-page .page-title h1 { font-size: clamp(20px, 1.7vw, 24px); letter-spacing: -0.025em; margin: 3px 0 2px; }
+.ask-page .page-title p { font-size: 12px; }
+/* Search result clear row */
+.results-head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:9px; }
+.results-head > .muted.small { margin-bottom:0; }
+/* Unified settings save rows */
+.settings-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:16px; padding-top:12px; border-top:1px solid var(--border); }
+.settings-actions .btn.primary { min-width:82px; }
+.settings-actions .muted { margin-left:2px; }
+.placeholder-label { flex:0 0 auto; font-size:11px; color:var(--muted); }

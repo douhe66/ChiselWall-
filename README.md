@@ -18,12 +18,12 @@
 ### 核心特性
 
 - **随手记**：挂载本地目录/文件（目录递归索引），支持思源（.sy）、Obsidian、Markdown、TXT、DOCX、XLSX、PDF、CSV 等；只建索引，不复制、不改动原文件；支持排除规则、增量索引、挂载暂停/恢复。单篇可设 **共享 / 仅本机 / 隐藏**：仅本机仍可本地搜索、远端不可见；隐藏本机也不参与搜索；两者都保留预览/定位/打开。思源只监视 data/，Linux 下不会为 repo/history/conf/temp 注册 inotify watch。
-- **随手问**：向在线同事广播问题，聚合各自命中的知识；**会话列表/历史持久化**，首问广播，后续追问基于上一轮结果、不重复广播；提问组可展开查看在线成员。
+- **随手问**：向在线同事广播问题，聚合各自命中的知识；**会话列表/历史持久化**，首问广播；追问默认基于上一轮结果，可勾选「重新检索」广播新问题；上一轮无结果时自动重新检索。**提问组在设置中单独管理**：加入/退出、查看在线成员；只有已加入的组才会出现在随手问的提问组列表。
 - **搜索结果先看**：右侧独立结果栏展示命中原文、来源同事、耗时与片段；支持预览全文、打开所在位置、直接打开本地文件、远端预览。
-- **AI 综合**：可选。提问框旁勾选「AI 综合」自动生成；不勾选则先看结果，再点会话级「AI 综合」按钮。支持 **SSE 流式输出**，上下文预算默认 24000 字符（可调），长文档保留开头/命中窗口/结尾，每轮引用独立落库。
+- **AI 综合**：可选。提问框旁勾选「AI 综合」自动生成；不勾选则先看结果，再点会话级「AI 综合」按钮。支持 **SSE 流式输出**，上下文预算默认 24000 字符（可调），长文档保留开头/命中窗口/结尾，每轮引用独立落库。AI 接入支持标准 OpenAI 与**自定义网关**：base_url 可直接填接口或使用 ${host}/${path} 占位符从本地文件动态读取，并可配置自定义请求头。
 - **混合检索**：SQLite FTS5 + jieba 中文分词 + 向量检索（bge-small-zh）+ RRF 融合；弱相关结果单独折叠，不进入 AI 上下文。
 - **可选重排（rerank）**：HTTP（Cohere/Jina/TEI 兼容）或本地 ONNX；带分数缓存、空闲自动卸载。
-- **可选查询改写**：用已配置的 LLM 把问题改写成 1–3 条检索式；默认关，提示词可在设置页自定义。
+- **可选查询计划**：用已配置的 LLM 在**发送前**把问题拆成 1–4 个概念组（组内同义词 OR、组间软 AND 覆盖度），原问题始终保留；AI 未配置/失败/超时直接回退原问题。默认关。
 - **隐私边界**：中心只路由；只有在线节点参与检索；排除规则为"拒绝并集"；单篇共享状态与挂载暂停都会同时过滤本地/远端检索；不支持的格式会进入失败列表，不会静默丢失。敏感内容自动识别尚未实现（方案见 docs/design/sensitive-content-detection.md），当前由用户手动决定共享。
 
 ### 架构
@@ -89,7 +89,7 @@ chiselwall-relay.exe --config relay.json --host 0.0.0.0 --port 18760
 ### 使用方式
 
 1. **随手记**：添加挂载目录，等待索引完成；可配置排除规则。
-2. **随手问**：新建会话 → 选择提问组 → 广播提问；结果先出现在右侧，按需 AI 综合；同一会话继续输入即追问。
+2. **随手问**：新建会话 → 选择提问组 → 广播提问；结果先出现在右侧，按需 AI 综合；同一会话继续输入即追问；默认沿用上一轮结果，勾选「重新检索」可广播新问题，无上一轮结果时自动新检索。提问组在设置页单独管理，只有已加入的组会出现在提问面板。
 3. **AI 会话**：所有会话在随手问左侧；可切换/改名/删除，历史保存在本地 SQLite。
 4. **语义搜索**（可选）：设置 → 语义搜索 → 启用 → 重建向量索引；可随时关闭回退关键词检索。
 5. **重排/查询改写**（可选）：设置页按需开启；默认关闭。
@@ -129,7 +129,7 @@ python tests/make_fixtures.py
 python -m unittest discover -s tests -p "test_*.py"
 ```
 
-当前：**301 项测试通过**（Windows）。评测脚本：
+当前：**320 项测试通过**（Windows）。评测脚本：
 
 ```bash
 python tests/eval_retrieval.py --db ~/.chiselwall/chiselwall.db
@@ -159,11 +159,15 @@ models/       本地向量/重排模型（不提交 Git）
 - 路线图：[docs/design/roadmap-v2.md](docs/design/roadmap-v2.md)
 - 检索质量：[docs/design/retrieval-quality.md](docs/design/retrieval-quality.md)
 - 重排：[docs/design/p1-rerank-design.md](docs/design/p1-rerank-design.md)
-- 查询改写：[docs/design/p2-query-rewrite.md](docs/design/p2-query-rewrite.md)
+- 查询计划：[docs/design/query-plan.md](docs/design/query-plan.md)（旧版说明：[p2-query-rewrite.md](docs/design/p2-query-rewrite.md)）
 - 向量后端：[docs/design/p3-vector-backend.md](docs/design/p3-vector-backend.md)
 - UI 设计系统：[docs/design/ui-refresh.md](docs/design/ui-refresh.md)
 - 共享/挂载暂停：[docs/design/sharing-and-mounts.md](docs/design/sharing-and-mounts.md)
 - Linux inotify 修复：[docs/review/linux-inotify-fix.md](docs/review/linux-inotify-fix.md)
+- Relay websockets 依赖：[docs/review/linux-relay-websockets.md](docs/review/linux-relay-websockets.md)
+- AI 自定义网关：[docs/design/ai-gateway.md](docs/design/ai-gateway.md)
+- 发送前检索计划：[docs/design/query-plan.md](docs/design/query-plan.md)
+- 追问重新检索：[docs/design/followup-search.md](docs/design/followup-search.md)
 - AI 流式/上下文：[docs/design/ai-streaming-context.md](docs/design/ai-streaming-context.md)
 - 验收报告：[docs/review/](docs/review/)
 - 未完成事项：[docs/planning/open-items.md](docs/planning/open-items.md)
@@ -173,7 +177,7 @@ models/       本地向量/重排模型（不提交 Git）
 - Linux 真机打包/冒烟、同事 Windows 机器内测尚未完成；
 - 2 万块向量规模未压测（当前 2030 块约 81s，建索引指标可能不达标）；
 - 内网 `/embeddings`、真实 HTTP rerank 服务未接真实端点；
-- 随手问追问固定沿用上一轮结果，暂无"重新广播"按钮；
+- 随手问追问默认沿用上一轮结果，可勾选「重新检索」；更复杂的自动检索判断尚未做。
 - 超长文档仍会按上下文预算截断（带"中间省略"标记）；
 - relay 目前 ws:// + token，生产建议放在 TLS 反向代理后；
 - 许可证待定（内部项目）。
@@ -288,7 +292,7 @@ python tests/make_fixtures.py
 python -m unittest discover -s tests -p "test_*.py"
 ```
 
-Currently **301 tests pass** on Windows. Evaluation:
+Currently **320 tests pass** on Windows. Evaluation:
 
 ```bash
 python tests/eval_retrieval.py --db ~/.chiselwall/chiselwall.db

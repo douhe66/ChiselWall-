@@ -59,7 +59,7 @@ def _sse_response(events):
 #   - 页脚版本展示
 #   - /api/health 的 version 字段
 # 任何 UI 改动必须 bump 此值，否则用户浏览器仍可能命中旧缓存。
-APP_VERSION = "0.9.4"
+APP_VERSION = "0.9.13"
 
 # 健康检查路径：公开（不含知识内容）
 PUBLIC_PATHS = {"/api/health", "/"}
@@ -95,6 +95,9 @@ class AIConfigIn(BaseModel):
     max_context_chars: Optional[int] = None
     top_n: Optional[int] = None
     max_tokens: Optional[int] = None
+    mode: Optional[str] = None
+    placeholder_files: Optional[dict[str, str]] = None
+    headers: Optional[list[dict[str, str]]] = None
 
 
 class QueryConfigIn(BaseModel):
@@ -147,6 +150,13 @@ class RelayGroupIn(BaseModel):
     """新建提问组（M6）：组名 + 描述（描述会展示给所有人）。"""
     name: str
     description: str = ""
+
+
+class RelayTestIn(BaseModel):
+    relay_url: Optional[str] = None
+    nick: Optional[str] = None
+    token: Optional[str] = None
+    groups: Optional[list[str]] = None
 
 
 class FetchIn(BaseModel):
@@ -437,8 +447,8 @@ def create_app(agent, token: str = "") -> FastAPI:
         saved = agent.save_relay(data)
         try:
             await agent.restart_bus()
-        except Exception:
-            pass
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail="Relay 重连失败: " + str(exc))
         return agent.relay_public()
 
     @app.post("/api/relay/groups", dependencies=[Depends(require_token)])
@@ -451,6 +461,13 @@ def create_app(agent, token: str = "") -> FastAPI:
     @app.get("/api/relay", dependencies=[Depends(require_token)])
     def relay_info() -> dict:
         return agent.bus.info()
+
+    @app.post("/api/relay/test", dependencies=[Depends(require_token)])
+    async def relay_test(body: Optional[RelayTestIn] = None) -> dict:
+        try:
+            return await agent.test_relay(body.model_dump() if body else {})
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
 
     @app.post("/api/ask", dependencies=[Depends(require_token)])
     async def ask(body: AskIn) -> dict:

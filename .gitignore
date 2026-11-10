@@ -11,6 +11,9 @@ tests/fixtures/acceptance/.run/
 tests/fixtures/acceptance/root/generated/
 build/
 dist/
+build-linux/
+dist-linux/
+*.tar.gz
 models/
 *.spec
 jieba.cache

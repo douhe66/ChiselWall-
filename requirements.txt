@@ -2,6 +2,8 @@
 # Web / API
 fastapi>=0.110
 uvicorn>=0.29
+# relay WebSocket 客户端（缺失时 relay 无法连接）
+websockets>=12
 # 全文检索（中文分词）
 jieba>=0.42.1
 # 文件监视与资源控制

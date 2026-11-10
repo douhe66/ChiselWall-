@@ -161,6 +161,8 @@ class NodeAgent:
             self.remote_searcher,
             search_fn=self.search_local_expanded,
             rewrite_fn=lambda q: self.rewriter.rewrite(q),
+            plan_fn=lambda q: self.rewriter.plan(q),
+            local_searcher=self.searcher,
         )
         self._load_state()
 
@@ -420,6 +422,8 @@ class NodeAgent:
             "online": self.bus.online,
             "server_groups": self.bus.client.known_groups,
             "known_groups": self.bus.client.known_groups,
+            "last_error": self.bus.client.last_error,
+            "dependency_ok": self.bus.client.dependency_ok,
         }
 
     def save_relay(self, data: dict) -> dict:
@@ -459,14 +463,27 @@ class NodeAgent:
 
         await self.bus.stop()
         self.bus = NodeBus(
-            self._relay_config_obj(), self.searcher,
+            self._relay_config_obj(), self.remote_searcher,
             search_fn=self.search_local_expanded,
             rewrite_fn=lambda q: self.rewriter.rewrite(q),
+            plan_fn=lambda q: self.rewriter.plan(q),
+            local_searcher=self.searcher,
         )
         self.bus.start()
 
     async def create_group(self, name: str, description: str = "") -> dict:
         return await self.bus.create_group(name, description)
+
+    async def test_relay(self, data: dict) -> dict:
+        """设置页连通性测试；overrides 只用于本次测试，不落盘。"""
+        from node.bus import probe_relay
+
+        c = self.config
+        url = str(data.get("relay_url") or c.relay_url or "").strip()
+        nick = str(data.get("nick") or c.relay_nick or "").strip()
+        token = str(data.get("token") or c.relay_token or "").strip()
+        groups = data.get("groups") or list(c.relay_groups or ["全员组"])
+        return await probe_relay(url, nick, token, list(groups))
 
     async def start_bus(self) -> None:
         """在事件循环内启动 relay 长连接（FastAPI startup 调用；未配置时无操作）。"""
@@ -495,10 +512,22 @@ class NodeAgent:
     def update_ai(self, data: dict) -> dict:
         """更新并持久化 AI 配置（api_key 为空表示保持不变）。"""
         cfg = self.ai_config
-        if "base_url" in data:
-            from ai.llm import normalize_base_url
+        from ai.llm import merge_headers, normalize_base_url
 
-            cfg.base_url = normalize_base_url(str(data.get("base_url") or ""))
+        if "mode" in data and data.get("mode") is not None:
+            cfg.mode = "gateway" if str(data.get("mode")).lower() == "gateway" else "openai"
+        if "base_url" in data:
+            raw = str(data.get("base_url") or "").strip()
+            cfg.base_url = raw if cfg.mode == "gateway" else normalize_base_url(raw)
+        if "placeholder_files" in data:
+            raw_files = data.get("placeholder_files") or {}
+            cfg.placeholder_files = {
+                str(k).strip(): str(v).strip()
+                for k, v in (raw_files.items() if isinstance(raw_files, dict) else [])
+                if str(k).strip() and str(v).strip()
+            }
+        if "headers" in data:
+            cfg.headers = merge_headers(cfg.headers, data.get("headers") or [])
         if "model" in data:
             cfg.model = str(data.get("model") or "").strip()
         if "api_key" in data and data.get("api_key"):
@@ -527,12 +556,24 @@ class NodeAgent:
         """连通性测试。overrides 为表单里尚未保存的值（base_url/model/api_key/use_system_proxy）。"""
         from dataclasses import replace
 
-        from ai.llm import LLMClient, normalize_base_url
+        from ai.llm import LLMClient, merge_headers, normalize_base_url
 
         cfg = replace(self.ai_config)
         data = overrides or {}
-        if data.get("base_url"):
-            cfg.base_url = normalize_base_url(str(data["base_url"]))
+        if data.get("mode") is not None:
+            cfg.mode = "gateway" if str(data.get("mode")).lower() == "gateway" else "openai"
+        if data.get("base_url") is not None:
+            raw = str(data.get("base_url") or "").strip()
+            cfg.base_url = raw if cfg.mode == "gateway" else normalize_base_url(raw)
+        if data.get("placeholder_files") is not None:
+            raw_files = data.get("placeholder_files") or {}
+            cfg.placeholder_files = {
+                str(k).strip(): str(v).strip()
+                for k, v in (raw_files.items() if isinstance(raw_files, dict) else [])
+                if str(k).strip() and str(v).strip()
+            }
+        if data.get("headers") is not None:
+            cfg.headers = merge_headers(cfg.headers, data.get("headers") or [])
         if data.get("model"):
             cfg.model = str(data["model"]).strip()
         if data.get("api_key"):
@@ -668,7 +709,7 @@ class NodeAgent:
         qid = str(result.get("qid") or "")
         turn = self.ask_sessions.append(
             sid, "user", question,
-            {"qid": qid, "groups": result.get("groups") or [], "aggregated": []},
+            {"qid": qid, "groups": result.get("groups") or [], "aggregated": [], "plan": result.get("plan")},
         )
         if session.get("title") == "新会话":
             self.ask_sessions.rename(sid, question[:20])
@@ -688,6 +729,7 @@ class NodeAgent:
             "qid": qid,
             "aggregated": aggregated[:30],
             "search_text": view.get("search_text") or question,
+            "plan": view.get("plan"),
             "answers": view.get("answers") or [],
             "elapsed_ms": view.get("elapsed_ms") or 0,
             "expected": view.get("expected") or 0,
@@ -705,12 +747,15 @@ class NodeAgent:
         turns = self.ask_sessions.turns(sid)
         target = None
         for turn in reversed(turns):
-            if turn.get("role") == "user" and (turn.get("payload") or {}).get("aggregated"):
+            if turn.get("role") == "user":
                 target = turn
                 break
         if target is None:
             return {"ok": False, "error": "本会话还没有可综合的搜索结果"}
         aggregated = (target.get("payload") or {}).get("aggregated") or []
+        if not aggregated:
+            return {"ok": False, "needs_search": True,
+                    "error": "最近一轮没有检索结果；请重新检索或重新提问"}
         history = self._pair_history([t for t in turns if int(t["id"]) < int(target["id"])])
         answer = self.ai_answer(str(target.get("content") or ""), aggregated, history=history)
         if answer.get("answer"):
@@ -730,17 +775,20 @@ class NodeAgent:
             return {"ok": False, "error": "追问不能为空"}
         turns = self.ask_sessions.turns(sid)
         aggregated: list = []
+        latest_user = None
         for turn in reversed(turns):
             if turn.get("role") == "user":
-                payload = turn.get("payload") or {}
-                aggregated = payload.get("aggregated") or []
-                if not aggregated and payload.get("qid"):
-                    view = self.bus.view(str(payload["qid"])) or {}
-                    aggregated = view.get("aggregated") or []
-                if aggregated:
-                    break
+                latest_user = turn
+                break
+        if latest_user is not None:
+            payload = latest_user.get("payload") or {}
+            aggregated = payload.get("aggregated") or []
+            if not aggregated and payload.get("qid"):
+                view = self.bus.view(str(payload["qid"])) or {}
+                aggregated = view.get("aggregated") or []
         if not aggregated:
-            return {"ok": False, "error": "上一轮还没有可用的检索结果，请等本轮完成后再追问"}
+            return {"ok": False, "needs_search": True,
+                    "error": "最近一轮没有检索结果；请改用「重新检索」或重新提问"}
         self.ask_sessions.append(sid, "user", question, {"aggregated": aggregated[:30]})
         if not summarize:
             return {"ok": True, "answer": None, "aggregated": aggregated, "session": self.ask_sessions.get(sid),
@@ -766,13 +814,17 @@ class NodeAgent:
         turns = self.ask_sessions.turns(sid)
         target = None
         for turn in reversed(turns):
-            if turn.get("role") == "user" and (turn.get("payload") or {}).get("aggregated"):
+            if turn.get("role") == "user":
                 target = turn
                 break
         if target is None:
             yield {"type": "error", "error": "本会话还没有可综合的搜索结果"}
             return
         aggregated = (target.get("payload") or {}).get("aggregated") or []
+        if not aggregated:
+            yield {"type": "error", "needs_search": True,
+                   "error": "最近一轮没有检索结果；请重新检索或重新提问"}
+            return
         aggregated = self.enrich_local_context(aggregated)
         history = self._pair_history([t for t in turns if int(t["id"]) < int(target["id"])])
         for ev in stream_answer(str(target.get("content") or ""), aggregated, self.ai_config, history=history):
@@ -804,17 +856,20 @@ class NodeAgent:
             return
         turns = self.ask_sessions.turns(sid)
         aggregated: list = []
+        latest_user = None
         for turn in reversed(turns):
             if turn.get("role") == "user":
-                payload = turn.get("payload") or {}
-                aggregated = payload.get("aggregated") or []
-                if not aggregated and payload.get("qid"):
-                    view = self.bus.view(str(payload["qid"])) or {}
-                    aggregated = view.get("aggregated") or []
-                if aggregated:
-                    break
+                latest_user = turn
+                break
+        if latest_user is not None:
+            payload = latest_user.get("payload") or {}
+            aggregated = payload.get("aggregated") or []
+            if not aggregated and payload.get("qid"):
+                view = self.bus.view(str(payload["qid"])) or {}
+                aggregated = view.get("aggregated") or []
         if not aggregated:
-            yield {"type": "error", "error": "上一轮还没有可用的检索结果，请等本轮完成后再追问"}
+            yield {"type": "error", "needs_search": True,
+                   "error": "最近一轮没有检索结果；请改用「重新检索」或重新提问"}
             return
         history = self._pair_history(turns)
         aggregated = self.enrich_local_context(aggregated)
@@ -1119,7 +1174,7 @@ class NodeAgent:
         if "enabled" in data and data.get("enabled") is not None:
             cfg.enabled = bool(data.get("enabled"))
         if "max_queries" in data and data.get("max_queries") is not None:
-            cfg.max_queries = max(1, min(5, int(data.get("max_queries"))))
+            cfg.max_queries = max(1, min(4, int(data.get("max_queries"))))
         if "timeout_s" in data and data.get("timeout_s") is not None:
             cfg.timeout_s = max(1.0, min(15.0, float(data.get("timeout_s"))))
         if "system_prompt" in data and data.get("system_prompt") is not None:
@@ -1132,22 +1187,20 @@ class NodeAgent:
         return self.query_public()
 
     def search_local_expanded(self, query: str, topk: int = 8) -> list:
-        """本地搜索 + 查询改写多路召回（RRF 合并；失败自动只用原查询）。"""
-        base = self.searcher.search(query, topk)
-        # 原查询已有强命中时不做改写：避免重排/掺入噪声，也省一次 LLM 调用
-        if any(getattr(h, "tier", "strong") == "strong" for h in base):
-            return base
-        if not self.rewriter.ready:
-            return base
-        variants = self.rewriter.rewrite(query)
-        if not variants:
-            return base
-        try:
-            lists = [base] + [self.searcher.search(v, topk) for v in variants]
-        except Exception:
-            log.exception("查询改写召回失败，回退原查询")
-            return base
-        return self._merge_expanded(lists, topk)
+        """本地搜索：启用查询计划时先拆词，再软 AND/OR 召回；失败回退原查询。"""
+        if self.rewriter.ready:
+            try:
+                plan = self.rewriter.plan(query)
+            except Exception:
+                log.exception("检索计划生成失败，回退原查询")
+                plan = None
+            if plan is not None:
+                from ai.query_plan import evaluate_plan
+
+                hits = evaluate_plan(self.searcher, plan, topk)
+                if hits:
+                    return hits
+        return self.searcher.search(query, topk)
 
     def _merge_expanded(self, lists: list, topk: int) -> list:
         """改写结果只追加、不重排原查询结果；base 永远在前。"""

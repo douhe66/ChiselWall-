@@ -6,6 +6,7 @@ createApp({
     return {
       page: "notes",
       theme: localStorage.getItem("chisel_theme") || "dark",
+      sidebarCollapsed: localStorage.getItem("chisel_rail_collapsed") === "1",
       query: "",
       hits: [],
       searched: false,
@@ -38,6 +39,11 @@ createApp({
       relayGroupInfo: [],
       relayForm: { relay_url: "", nick: "", token: "", groups: [] },
       relaySaving: false,
+      relayTesting: false,
+      relayTestResult: "",
+      relayTestTone: "",
+      groupsSaving: false,
+      groupForm: { groups: [] },
       newGroupName: "",
       newGroupDesc: "",
       askText: "",
@@ -62,6 +68,7 @@ createApp({
       privacyNoticeClosed: localStorage.getItem("chisel_privacy_notice") === "1",
       followupText: "",
       followupBusy: false,
+      askFollowupSearch: false,
       // M8 AI 会话
       chatSessions: [],
       chatSession: null,
@@ -71,7 +78,7 @@ createApp({
       chatLastCitations: [],
       // M5 AI
       ai: { ready: false, model: "", base_url: "", has_key: false, masked_key: "" },
-      aiForm: { base_url: "", model: "", api_key: "", temperature: 0.2, use_system_proxy: false, system_prompt: "", max_context_chars: 24000, top_n: 24, max_tokens: 4000 },
+      aiForm: { mode: "openai", base_url: "", placeholder_files: {}, headers: [], model: "", api_key: "", temperature: 0.2, use_system_proxy: false, system_prompt: "", max_context_chars: 24000, top_n: 24, max_tokens: 4000 },
       // M7 向量检索
       vector: { ready: false, enabled: false, vectors: 0, error: "", provider: "local", model_dir: "", base_url: "", model: "", has_key: false, dim: 512 },
       vectorForm: { enabled: false, provider: "local", model_dir: "", base_url: "", model: "", api_key: "", dim: 512, use_system_proxy: false },
@@ -97,6 +104,7 @@ createApp({
       _toastTimer: null,
       needToken: false,
       tokenInput: "",
+      tokenError: "",
       token: localStorage.getItem("chisel_token") || "",
     };
   },
@@ -147,6 +155,9 @@ createApp({
       const res = await fetch(path, opts);
       if (res.status === 401) {
         this.needToken = true;
+        this.tokenError = this.token
+          ? "本地 API token 无效或已变更；请粘贴当前 config.json 中的 api_token"
+          : "请输入本地 API token";
         throw new Error("need token");
       }
       if (!res.ok) {
@@ -158,6 +169,10 @@ createApp({
     },
     applyTheme() {
       document.documentElement.dataset.theme = this.theme;
+    },
+    toggleRail() {
+      this.sidebarCollapsed = !this.sidebarCollapsed;
+      localStorage.setItem("chisel_rail_collapsed", this.sidebarCollapsed ? "1" : "0");
     },
     toggleTheme() {
       this.theme = this.theme === "dark" ? "light" : "dark";
@@ -179,6 +194,9 @@ createApp({
       });
       if (res.status === 401) {
         this.needToken = true;
+        this.tokenError = this.token
+          ? "本地 API token 无效或已变更；请粘贴当前 config.json 中的 api_token"
+          : "请输入本地 API token";
         throw new Error("need token");
       }
       if (!res.ok) {
@@ -228,8 +246,8 @@ createApp({
           relay_url: r.relay_url || "",
           nick: r.nick || "",
           token: "",
-          groups: [...(r.groups || [])],
         };
+        this.groupForm.groups = [...(r.groups || [])];
       } catch (e) {
         this.showToast("读取 relay 配置失败：" + (e.message || e), "error");
       }
@@ -241,7 +259,6 @@ createApp({
         const body = {
           relay_url: this.relayForm.relay_url,
           nick: this.relayForm.nick,
-          groups: this.relayForm.groups,
         };
         if (this.relayForm.token) body.token = this.relayForm.token;
         this.relay = await this.api("/api/relay/config", {
@@ -250,13 +267,37 @@ createApp({
           body: JSON.stringify(body),
         });
         this.relayForm.token = "";
-        this.relayForm.groups = [...(this.relay.groups || [])];
+        this.groupForm.groups = [...(this.relay.groups || [])];
         this.showToast(this.relay.connected ? "已保存并连接" : "已保存，正在连接…", "info");
         await this.loadRelay();
       } catch (e) {
         this.showToast("保存失败：" + (e.message || e), "error");
       } finally {
         this.relaySaving = false;
+      }
+    },
+    async testRelay() {
+      if (this.relayTesting) return;
+      this.relayTesting = true;
+      this.relayTestResult = "正在测试连接…";
+      this.relayTestTone = "";
+      try {
+        const body = {
+          relay_url: this.relayForm.relay_url,
+          nick: this.relayForm.nick,
+          groups: this.groupForm.groups,
+        };
+        if (this.relayForm.token) body.token = this.relayForm.token;
+        const r = await this.api("/api/relay/test", {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+        });
+        this.relayTestResult = "连接成功：" + (r.nick || this.relayForm.nick) + " · 在线 " + (r.online || 0) + " 人 · " + (r.groups || 0) + " 组 · " + (r.elapsed_ms || 0) + "ms";
+        this.relayTestTone = "ok";
+      } catch (e) {
+        this.relayTestResult = "连接失败：" + (e.message || e);
+        this.relayTestTone = "error";
+      } finally {
+        this.relayTesting = false;
       }
     },
     async createGroup() {
@@ -270,7 +311,7 @@ createApp({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ name: this.newGroupName.trim(), description: this.newGroupDesc.trim() }),
         });
-        this.showToast("已建组：" + this.newGroupName.trim(), "info");
+        this.showToast("已建组；在列表中勾选「加入」后保存", "info");
         this.newGroupName = "";
         this.newGroupDesc = "";
         await this.loadRelay();
@@ -285,17 +326,38 @@ createApp({
         const info = raw.map((g) => (typeof g === "string" ? { name: g, description: "", online: 0 } : g));
         this.relayGroupInfo = info;
         this.relayGroups = info.length ? info.map((g) => g.name) : ["全员组"];
+        const joined = (this.relay.groups || []).filter((g) => this.relayGroups.includes(g));
         if (this.askGroupsTouched) {
-          // 用户手动勾选过：只保留仍然存在的组（允许不勾选任何组，提问时会提示）
-          this.askGroupsSel = this.askGroupsSel.filter((g) => this.relayGroups.includes(g));
+          // 用户手动勾选过：只保留仍然加入的组（允许不勾选任何组，提问时会提示）
+          this.askGroupsSel = this.askGroupsSel.filter((g) => joined.includes(g));
         } else {
-          // 默认只选自己加入的组（避免一提问就打扰所有组）
-          const own = (this.relay.groups || []).filter((g) => this.relayGroups.includes(g));
-          this.askGroupsSel = own.length ? own : [...this.relayGroups];
+          // 默认只选已加入的组；未加入任何组时提问页不会显示可勾选组
+          this.askGroupsSel = joined;
         }
 
       } catch (e) {
         if (String(e.message) !== "need token") this.askError = String(e.message || e);
+      }
+    },
+    askGroupChoices() {
+      const joined = this.relay.groups || [];
+      return (this.relayGroupInfo || []).filter((g) => joined.includes(g.name));
+    },
+    async saveGroupMembership() {
+      if (this.groupsSaving) return;
+      this.groupsSaving = true;
+      try {
+        const body = { groups: this.groupForm.groups };
+        this.relay = await this.api("/api/relay/config", {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+        });
+        this.groupForm.groups = [...(this.relay.groups || [])];
+        this.showToast("提问组成员已更新，正在重连 relay…", "info");
+        await this.loadRelay();
+      } catch (e) {
+        this.showToast("保存提问组失败：" + (e.message || e), "error");
+      } finally {
+        this.groupsSaving = false;
       }
     },
     saveAskAuto() {
@@ -305,7 +367,7 @@ createApp({
       const turns = this.askTurns || [];
       for (let i = turns.length - 1; i >= 0; i -= 1) {
         const t = turns[i];
-        if (t.role === "user" && t.payload && (t.payload.aggregated || []).length) return t.payload;
+        if (t.role === "user" && t.payload) return t.payload;
       }
       return null;
     },
@@ -429,7 +491,7 @@ createApp({
       if (!text || this.askSending) return;
       this.askGroupsTouched = true;
       if (!this.askGroupsSel.length) {
-        this.askError = "请至少选择一个提问组（首问需要广播）";
+        this.askError = "请先加入并选择一个提问组（设置 → 提问组）";
         this.showToast(this.askError, "error");
         return;
       }
@@ -445,12 +507,15 @@ createApp({
           await this.loadAskSessions();
         }
         const sid = this.askSession.id;
-        if (!this.askHasTurns()) {
+        const forceSearch = !this.askHasTurns() || this.askFollowupSearch || !this.askLatestHits().length;
+        if (forceSearch) {
+          this.askProgress = "正在拆分检索词并广播…";
           const r = await this.api("/api/ask-sessions/" + sid + "/ask", {
             method: "POST", headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ text, groups: this.askGroupsSel }),
           });
           this.askInput = "";
+          this.askFollowupSearch = false;
           this.askProgress = "正在收集同事回答…";
           await this.openAskSession(sid);
           this.startAskPoll(r.qid, r.turn_id);
@@ -527,13 +592,20 @@ createApp({
     stopAskPoll() {
       if (this.askTimer) { clearInterval(this.askTimer); this.askTimer = null; }
     },
+    formatElapsed(ms) {
+      const n = Number(ms);
+      if (!Number.isFinite(n) || n <= 0) return "<1ms";
+      return n + "ms";
+    },
     routeLabel(route) {
+      if (route === "plan") return "计划命中";
       if (route === "hybrid") return "混合命中";
       if (route === "vector") return "语义命中";
       if (route === "jieba" || route === "jieba_and") return "主索引";
       return "兜底命中";
     },
     routeClass(route) {
+      if (route === "plan") return "route-hybrid";
       if (route === "hybrid") return "route-hybrid";
       if (route === "vector") return "route-vector";
       if (route === "jieba" || route === "jieba_and") return "route-main";
@@ -796,6 +868,9 @@ createApp({
         this.ai = await this.api("/api/ai/config");
         if (!this.aiForm.base_url && this.ai.base_url) this.aiForm.base_url = this.ai.base_url;
         if (!this.aiForm.model && this.ai.model) this.aiForm.model = this.ai.model;
+        this.aiForm.mode = this.ai.mode || "openai";
+        this.aiForm.placeholder_files = Object.assign({}, this.ai.placeholder_files || {});
+        this.aiForm.headers = (this.ai.headers || []).map((h) => ({ name: h.name || "", value: "", has_value: !!h.has_value }));
         this.aiForm.use_system_proxy = !!this.ai.use_system_proxy;
         this.aiForm.system_prompt = this.ai.system_prompt || "";
         this.aiForm.max_context_chars = this.ai.max_context_chars || 24000;
@@ -804,6 +879,31 @@ createApp({
       } catch (e) {
         // AI 配置读取失败不阻断页面；设置页保存/测试时会给出明确错误
       }
+    },
+    syncAIFormFromPublic() {
+      this.aiForm.mode = this.ai.mode || "openai";
+      this.aiForm.placeholder_files = Object.assign({}, this.ai.placeholder_files || {});
+      this.aiForm.headers = (this.ai.headers || []).map((h) => ({ name: h.name || "", value: "", has_value: !!h.has_value }));
+    },
+    placeholderLabel(name) {
+      const labels = { host: "主机地址", path: "请求路径", tenant: "租户", region: "区域" };
+      return labels[name] || ("变量 " + name);
+    },
+    aiPlaceholders() {
+      const text = this.aiForm.base_url || "";
+      const out = [];
+      const re = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
+      let m;
+      while ((m = re.exec(text))) {
+        if (!out.includes(m[1])) out.push(m[1]);
+      }
+      return out;
+    },
+    addAIHeader() {
+      this.aiForm.headers.push({ name: "", value: "", has_value: false });
+    },
+    removeAIHeader(i) {
+      this.aiForm.headers.splice(i, 1);
     },
     async copyText(text) {
       if (!text) return;
@@ -822,7 +922,10 @@ createApp({
       this.aiSaving = true;
       try {
         const body = {
+          mode: this.aiForm.mode || "openai",
           base_url: this.aiForm.base_url,
+          placeholder_files: this.aiForm.placeholder_files || {},
+          headers: (this.aiForm.headers || []).filter((h) => h.name).map((h) => ({ name: h.name, value: h.value || "" })),
           model: this.aiForm.model,
           temperature: Number(this.aiForm.temperature) || 0.2,
           use_system_proxy: !!this.aiForm.use_system_proxy,
@@ -838,6 +941,7 @@ createApp({
           body: JSON.stringify(body),
         });
         this.aiForm.api_key = "";
+        this.syncAIFormFromPublic();
         this.showToast(this.ai.ready ? "AI 配置已保存并生效" : "已保存，但 base_url / model 未填全，AI 未就绪", "info");
       } catch (e) {
         this.showToast(String(e.message || e), "error");
@@ -852,7 +956,10 @@ createApp({
       this.showToast("正在测试连接（使用表单中当前填写的内容，无需先保存）…", "info");
       try {
         const body = {
+          mode: this.aiForm.mode || "openai",
           base_url: this.aiForm.base_url,
+          placeholder_files: this.aiForm.placeholder_files || {},
+          headers: (this.aiForm.headers || []).filter((h) => h.name).map((h) => ({ name: h.name, value: h.value || "" })),
           model: this.aiForm.model,
           use_system_proxy: !!this.aiForm.use_system_proxy,
         };
@@ -1074,6 +1181,12 @@ createApp({
       } catch (e) { /* 静默：refresh 已展示错误 */ }
     },
     // ---- 搜索 ----
+    clearSearch() {
+      this.searched = false;
+      this.hits = [];
+      this.query = "";
+      this.errorMsg = "";
+    },
     async doSearch() {
       if (!this.query) return;
       this.busy = true;
@@ -1293,12 +1406,30 @@ createApp({
         this.refresh();
       } catch (e) { this.errorMsg = String(e.message || e); }
     },
-    saveToken() {
-      if (!this.tokenInput) return;
-      this.token = this.tokenInput;
-      localStorage.setItem("chisel_token", this.token);
-      this.needToken = false;
-      this.refresh();
+    async saveToken() {
+      const candidate = (this.tokenInput || "").trim();
+      if (!candidate) {
+        this.tokenError = "请输入本地 API token";
+        return;
+      }
+      this.tokenError = "";
+      try {
+        const res = await fetch("/api/stats", { headers: { "X-Chisel-Token": candidate } });
+        if (res.status === 401) {
+          this.needToken = true;
+          this.tokenError = "token 无效：请使用当前运行节点的 config.json 中的 api_token";
+          return;
+        }
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        this.token = candidate;
+        localStorage.setItem("chisel_token", candidate);
+        this.tokenInput = "";
+        this.needToken = false;
+        this.tokenError = "";
+        await this.refresh();
+      } catch (e) {
+        this.tokenError = "校验失败：" + (e.message || e);
+      }
     },
   },
   mounted() {

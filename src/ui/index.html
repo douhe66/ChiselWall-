@@ -13,24 +13,29 @@
 </head>
 <body>
 <div id="app" v-cloak>
-  <aside class="rail">
+  <aside class="rail" :class="{ collapsed: sidebarCollapsed }">
     <div class="brand">
       <div class="brand-mark" aria-hidden="true">
         <svg viewBox="0 0 24 24" fill="none"><path d="M4.5 19.5 19.5 4.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M9 4.5h10.5V15" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </div>
       <div class="brand-text"><strong>凿壁</strong><span>ChiselWall</span></div>
     </div>
+    <button class="rail-toggle" @click="toggleRail" :title="sidebarCollapsed ? '展开侧栏' : '收起侧栏'">
+      <svg v-if="sidebarCollapsed" viewBox="0 0 24 24" fill="none"><path d="m9 6 6 6-6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <svg v-else viewBox="0 0 24 24" fill="none"><path d="m15 6-6 6 6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span class="rail-toggle-text">{{ sidebarCollapsed ? '展开' : '收起侧栏' }}</span>
+    </button>
     <div class="nav-label">工作区</div>
     <nav class="nav">
-      <button class="nav-item" :class="{ active: page === 'notes' }" @click="switchPage('notes')">
+      <button class="nav-item" :class="{ active: page === 'notes' }" title="随手记" @click="switchPage('notes')">
         <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M5 4.5h11.5A2.5 2.5 0 0 1 19 7v12.5H7.5A2.5 2.5 0 0 1 5 17V4.5Z" stroke="currentColor" stroke-width="1.7"/><path d="M8.5 8h6M8.5 11.5h6M8.5 15h4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></span>
         <span class="nav-text">随手记</span>
       </button>
-      <button class="nav-item" :class="{ active: page === 'ask' }" @click="switchPage('ask')">
+      <button class="nav-item" :class="{ active: page === 'ask' }" title="随手问" @click="switchPage('ask')">
         <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M20.5 11.5a7.5 7.5 0 0 1-8 7.5H5l2.1-2.6A7.5 7.5 0 1 1 20.5 11.5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M8.5 11h.01M12 11h.01M15.5 11h.01" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg></span>
         <span class="nav-text">随手问</span>
       </button>
-      <button class="nav-item" :class="{ active: page === 'settings' }" @click="switchPage('settings')">
+      <button class="nav-item" :class="{ active: page === 'settings' }" title="设置" @click="switchPage('settings')">
         <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M4 7h9M17 7h3M4 17h3M11 17h9" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="15" cy="7" r="2.2" stroke="currentColor" stroke-width="1.7"/><circle cx="9" cy="17" r="2.2" stroke="currentColor" stroke-width="1.7"/></svg></span>
         <span class="nav-text">设置</span>
       </button>
@@ -82,13 +87,17 @@
       <button class="btn small" @click="dismissPrivacyNotice">知道了</button>
     </div>
     <section class="results" v-if="searched">
-      <div class="muted small">{{ hits.length ? '命中 ' + hits.length + ' 条（topk）' : '没有命中，试试换关键词' }}</div>
+      <div class="results-head">
+        <div class="muted small">{{ hits.length ? '命中 ' + hits.length + ' 条（topk）' : '没有命中，试试换关键词' }}</div>
+        <button class="btn small" @click="clearSearch">清除结果</button>
+      </div>
       <article class="hit" v-for="h in strongHits" :key="h.doc_id + ':' + h.chunk_seq">
         <header>
           <strong>{{ h.title }}</strong>
           <span class="badge">{{ h.format }}</span>
           <span class="badge" :class="routeClass(h.route)">{{ routeLabel(h.route) }}</span>
           <span v-if="h.reranked" class="badge route-hybrid">已精排</span>
+          <span v-if="h.plan_clause_total" class="badge route-hybrid">覆盖 {{ h.plan_coverage }}/{{ h.plan_clause_total }}</span>
           <span class="muted small">{{ h.rel_path }}</span>
         </header>
         <div class="snippet-md" :class="{ expanded: h.snippetExpanded }" v-html="renderSnippet(h)"></div>
@@ -338,10 +347,11 @@
               <div class="chat-role">{{ t.role === 'user' ? '我' : '回答' }}</div>
               <div class="md-preview" v-html="renderMarkdown(t.content)"></div>
               <div v-if="t.role === 'user' && t.payload" class="ask-turn-meta">
-                <span v-if="t.payload.elapsed_ms" class="badge">耗时 {{ t.payload.elapsed_ms }}ms</span>
+                <span v-if="t.payload.elapsed_ms !== undefined" class="badge">等待 {{ formatElapsed(t.payload.elapsed_ms) }}</span>
                 <span v-if="t.payload.responded" class="badge">返回 {{ t.payload.responded }}/{{ t.payload.expected }} 位</span>
-                <span v-for="a in (t.payload.answers || [])" :key="a.node" class="badge kind">@{{ a.node }} {{ a.elapsed_ms }}ms · {{ a.hit_count }} 条</span>
+                <span v-for="a in (t.payload.answers || [])" :key="a.node" class="badge kind">@{{ a.node }} 检索 {{ formatElapsed(a.elapsed_ms) }} · {{ a.hit_count }} 条</span>
                 <span v-if="t.payload.search_text && t.payload.search_text !== t.content" class="muted small">实际检索：{{ t.payload.search_text }}</span>
+                <span v-if="t.payload.plan && t.payload.plan.expression" class="muted small">智能改写：{{ t.payload.plan.expression }}</span>
               </div>
               <div v-if="t.role === 'assistant' && t.payload" class="ask-turn-meta">
                 <span v-if="t.payload.elapsed_ms" class="muted small">AI 用时 {{ t.payload.elapsed_ms }}ms · {{ t.payload.model }}<template v-if="t.payload.context_chars"> · 上下文 {{ t.payload.context_chars }} 字</template></span>
@@ -368,11 +378,11 @@
             <div class="ask-group-bar">
               <span class="dock-label">提问组</span>
               <span v-for="g in askGroupsSel" :key="g" class="badge kind">{{ g }}</span>
-              <span v-if="!askGroupsSel.length" class="muted small">未选择（首问需要至少一个组）</span>
-              <button class="btn small dock-toggle" @click="askGroupsOpen = !askGroupsOpen">{{ askGroupsOpen ? '收起' : '管理提问组' }} · {{ relayGroupInfo.length }}</button>
+              <span v-if="!askGroupsSel.length" class="muted small">{{ askGroupChoices().length ? '未选择（首问需要至少一个组）' : '还没有加入任何组，请到设置 → 提问组加入' }}</span>
+              <button class="btn small dock-toggle" @click="askGroupsOpen = !askGroupsOpen">{{ askGroupsOpen ? '收起' : '管理提问组' }} · {{ askGroupChoices().length }}</button>
             </div>
             <div v-if="askGroupsOpen" class="ask-group-panel">
-              <template v-for="g in relayGroupInfo" :key="g.name">
+              <template v-for="g in askGroupChoices()" :key="g.name">
                 <div class="ask-group-row">
                   <label class="ask-group-option">
                     <input type="checkbox" :value="g.name" v-model="askGroupsSel" @change="askGroupsTouched = true">
@@ -385,13 +395,14 @@
                   <span v-if="!(g.members || []).length" class="muted small">暂无在线成员</span>
                 </div>
               </template>
-              <div v-if="!relayGroupInfo.length" class="muted small" style="padding:8px">还没有组，先在设置里建组。</div>
+              <div v-if="!askGroupChoices().length" class="muted small" style="padding:8px">还没有加入任何提问组，请到设置 → 提问组加入。</div>
             </div>
           </div>
           <div class="chat-input-row">
-            <textarea v-model="askInput" rows="2" :placeholder="askHasTurns() ? '继续追问（基于上一轮结果）' : '输入问题，首问广播给在线同事'" @keydown.enter.exact.prevent="sendAsk"></textarea>
+            <textarea v-model="askInput" rows="2" :placeholder="askHasTurns() ? '继续追问（默认基于上一轮；勾选重新检索可广播新问题）' : '输入问题，首问广播给在线同事'" @keydown.enter.exact.prevent="sendAsk"></textarea>
+            <label v-if="askHasTurns()" class="muted small ask-refresh"><input type="checkbox" v-model="askFollowupSearch"> 重新检索</label>
             <label class="muted small ask-auto-sum"><input type="checkbox" v-model="askAutoSummary" @change="saveAskAuto"> AI 综合</label>
-            <button class="btn primary" @click="sendAsk" :disabled="askSending">{{ askSending ? '处理中…' : (askHasTurns() ? '追问' : '广播提问') }}</button>
+            <button class="btn primary" @click="sendAsk" :disabled="askSending">{{ askSending ? '处理中…' : (askHasTurns() ? (askFollowupSearch ? '检索并追问' : '追问') : '广播提问') }}</button>
           </div>
         </template>
       </div>
@@ -403,9 +414,9 @@
           <button class="btn small" @click="summarizeAskSession" :disabled="askSummarizing || askSending || !askLatestHits().length">{{ askSummarizing ? 'AI 综合中…' : 'AI 综合' }}</button>
         </div>
         <div v-if="askLatestPayload()" class="ask-results-meta">
-          <span v-if="askLatestPayload().elapsed_ms" class="badge">耗时 {{ askLatestPayload().elapsed_ms }}ms</span>
+          <span v-if="askLatestPayload().elapsed_ms !== undefined" class="badge">等待 {{ formatElapsed(askLatestPayload().elapsed_ms) }}</span>
           <span v-if="askLatestPayload().responded" class="badge">返回 {{ askLatestPayload().responded }}/{{ askLatestPayload().expected }} 位</span>
-          <span v-for="a in (askLatestPayload().answers || [])" :key="a.node" class="badge kind">@{{ a.node }} {{ a.elapsed_ms }}ms · {{ a.hit_count }} 条</span>
+          <span v-for="a in (askLatestPayload().answers || [])" :key="a.node" class="badge kind">@{{ a.node }} 检索 {{ formatElapsed(a.elapsed_ms) }} · {{ a.hit_count }} 条</span>
         </div>
         <div class="ask-results-scroll">
           <div v-if="!askLatestHits().length" class="empty-state compact">
@@ -452,10 +463,11 @@
     <section class="settings-layout">
       <nav class="settings-nav" aria-label="设置分区">
         <a href="#set-relay">Relay 连接</a>
+        <a href="#set-groups">提问组</a>
         <a href="#set-ai">AI 配置</a>
         <a href="#set-vector">语义搜索</a>
         <a href="#set-rerank">重排 rerank</a>
-        <a href="#set-query">查询改写</a>
+        <a href="#set-query">查询智能改写</a>
         <a href="#set-limits">限流与预算</a>
       </nav>
       <section class="panels">
@@ -468,39 +480,83 @@
         <p class="muted small">
           当前：{{ relay.connected ? '已连接' : '未连接' }} · 我是 {{ relay.nick }} · 在线 {{ relay.online ? relay.online.length : 0 }} 人
         </p>
-        <h4>提问组（勾选 = 加入，取消 = 退出）</h4>
-        <ul class="group-list">
-          <li v-for="g in relayGroupInfo" :key="g.name">
-            <label><input type="checkbox" :value="g.name" v-model="relayForm.groups"> <strong>{{ g.name }}</strong></label>
-            <span class="muted small">{{ g.description || '（暂无描述）' }} · 在线 {{ g.online || 0 }} 人</span>
-          </li>
-          <li v-if="!relayGroupInfo.length" class="muted small">还没有组，先建一个吧</li>
-        </ul>
+        <p v-if="relay.last_error" class="warn">Relay 错误：{{ relay.last_error }} <button class="btn small" @click="copyText(relay.last_error)">复制</button></p>
+        <p class="muted small">当前已加入 {{ (relay.groups || []).length }} 个提问组；加入/退出和成员查看在 <a href="#set-groups">提问组设置</a>。</p>
+        <div class="settings-actions">
+          <button class="btn primary" @click="saveRelayConfig" :disabled="relaySaving">{{ relaySaving ? '保存中…' : '保存并连接' }}</button>
+          <button class="btn" @click="testRelay" :disabled="relayTesting">{{ relayTesting ? '测试中…' : '测试连接' }}</button>
+        </div>
+        <p v-if="relayTestResult" :class="relayTestTone === 'error' ? 'warn' : 'muted small'">{{ relayTestResult }}<button v-if="relayTestTone === 'error'" class="btn small" @click="copyText(relayTestResult)">复制</button></p>
+      </div>
+      <div class="panel wide" id="set-groups">
+        <h3>提问组</h3>
+        <p class="muted small">只有已加入的组会出现在随手问的提问组列表里。这里可以加入/退出、查看当前在线成员；修改后保存会重连 relay。</p>
+        <h4>新建提问组</h4>
         <div class="row">
           <input v-model="newGroupName" placeholder="新组名（如 数据库组）">
           <input v-model="newGroupDesc" placeholder="组描述（这个组讨论什么）">
           <button class="btn" @click="createGroup">建组</button>
         </div>
-        <div class="row">
-          <button class="btn primary" @click="saveRelayConfig" :disabled="relaySaving">{{ relaySaving ? '保存中…' : '保存并连接' }}</button>
+        <ul class="group-list">
+          <li v-for="g in relayGroupInfo" :key="g.name">
+            <div class="group-setting-row">
+              <label><input type="checkbox" :value="g.name" v-model="groupForm.groups"> <strong>{{ g.name }}</strong></label>
+              <button type="button" class="btn small group-member-btn" @click="toggleGroupMembers(g.name)">{{ expandedGroup === g.name ? '收起成员' : ((g.members || []).length || g.online || 0) + ' 位成员' }}</button>
+            </div>
+            <span class="muted small">{{ g.description || '（暂无描述）' }} · 在线 {{ g.online || 0 }} 人</span>
+            <div v-if="expandedGroup === g.name" class="group-member-list">
+              <span v-for="n in (g.members || [])" :key="n" class="member-chip"><span class="status-dot online"></span>@{{ n }}</span>
+              <span v-if="!(g.members || []).length" class="muted small">暂无在线成员</span>
+            </div>
+          </li>
+          <li v-if="!relayGroupInfo.length" class="muted small">还没有组，先建一个吧</li>
+        </ul>
+        <div class="settings-actions">
+          <button class="btn primary" @click="saveGroupMembership" :disabled="groupsSaving">{{ groupsSaving ? '保存中…' : '保存加入的组' }}</button>
+          <span class="muted small">勾选 = 加入，取消 = 退出；只有已加入的组会显示在随手问。</span>
         </div>
       </div>
       <div class="panel wide" id="set-ai">
         <h3>AI 配置（OpenAI 兼容）</h3>
-        <p class="muted small">支持 DeepSeek API、公司内网模型、Ollama（/v1 端点）。保存后立即生效；key 只保存在本机配置目录。</p>
-        <div class="row"><input v-model="aiForm.base_url" placeholder="base_url，如 https://api.deepseek.com 或 http://内网IP:8000/v1"></div>
-        <div class="row"><input v-model="aiForm.model" placeholder="模型名，如 deepseek-chat / 内网模型名"></div>
-        <div class="row"><input v-model="aiForm.api_key" type="password" :placeholder="ai.has_key ? '已保存 key（留空则保持不变）' : 'API key（内网无鉴权可留空）'"></div>
+        <p class="muted small">支持 DeepSeek API、公司内网模型、Ollama（/v1 端点）或自定义网关。保存后立即生效；key 只保存在本机配置目录。</p>
         <div class="row">
-          <input v-model.number="aiForm.temperature" type="number" step="0.1" min="0" max="2" style="max-width:120px" placeholder="temperature">
+          <label class="muted small">接入方式
+            <select v-model="aiForm.mode" style="margin-left:6px">
+              <option value="openai">标准 OpenAI 接入</option>
+              <option value="gateway">自定义网关接入</option>
+            </select>
+          </label>
+        </div>
+        <div class="row">
+          <input v-model="aiForm.base_url" :placeholder="aiForm.mode === 'gateway' ? '网关模板或接口；例：${host}/inf/v1、http://bai.com/${path}' : '接口地址；例：https://api.deepseek.com 或 http://内网IP:8000/v1'">
+        </div>
+        <p v-if="aiForm.mode === 'gateway'" class="muted small">
+          自定义网关：接口地址可直接填写；也可以使用 ${host}/${path} 占位符，占位符内容从下方文件读取，每次请求时重新读取。
+        </p>
+        <div v-if="aiForm.mode === 'gateway' && aiPlaceholders().length" class="placeholder-box">
+          <div v-for="name in aiPlaceholders()" :key="name" class="row placeholder-row">
+            <code v-text="'${' + name + '}'"></code>
+            <span class="placeholder-label">{{ placeholderLabel(name) }}</span>
+            <input v-model="aiForm.placeholder_files[name]" :placeholder="'本地文件路径（内容替换 ' + '${' + name + '}' + '），如 /etc/chiselwall/' + name + '.txt'">
+          </div>
+        </div>
+        <div class="row"><input v-model="aiForm.model" placeholder="模型名，如 deepseek-chat / 内网模型名"></div>
+        <h4>自定义请求头（可选） <span class="muted small">值留空 = 保留已保存值；删除行 = 删除该头</span></h4>
+        <div v-for="(h, i) in aiForm.headers" :key="i" class="row header-row">
+          <input v-model="h.name" placeholder="请求头名称，如 X-API-Key">
+          <input v-model="h.value" :placeholder="h.has_value ? '已保存，留空保留' : '请求头值'">
+          <button class="btn small danger" type="button" @click="removeAIHeader(i)">删除</button>
+        </div>
+        <div class="row"><button class="btn small" type="button" @click="addAIHeader">+ 添加请求头</button></div>
+        <div class="row"><input v-model="aiForm.api_key" type="password" :placeholder="ai.has_key ? '已保存密钥（留空则保持不变）' : 'API 密钥（内网无鉴权可留空）'"></div>
+        <div class="row">
+          <input v-model.number="aiForm.temperature" type="number" step="0.1" min="0" max="2" style="max-width:120px" placeholder="温度（0–2）">
           <label class="muted small"><input type="checkbox" v-model="aiForm.use_system_proxy"> 使用系统代理（访问外网模型时可能需要）</label>
         </div>
         <div class="row">
           <label class="muted small">上下文预算（字符）<input v-model.number="aiForm.max_context_chars" type="number" min="4000" max="100000" step="1000" style="max-width:130px;margin-left:5px"></label>
           <label class="muted small">片段数<input v-model.number="aiForm.top_n" type="number" min="4" max="60" style="max-width:90px;margin-left:5px"></label>
           <label class="muted small">回答上限（token）<input v-model.number="aiForm.max_tokens" type="number" min="500" max="16000" step="500" style="max-width:120px;margin-left:5px"></label>
-          <button class="btn" @click="saveAIConfig" :disabled="aiSaving">{{ aiSaving ? '保存中…' : '保存' }}</button>
-          <button class="btn" @click="testAI" :disabled="aiTesting">{{ aiTesting ? '测试中…' : '测试连接' }}</button>
         </div>
         <p class="muted small">
           当前：{{ ai.ready ? '已就绪 · ' + ai.model : '未配置' }}
@@ -511,7 +567,6 @@
                   placeholder="留空 = 使用内置默认提示词（见下方）"></textarea>
         <div class="row">
           <button class="btn small" @click="aiForm.system_prompt = ''">恢复默认</button>
-          <span class="muted small">保存后对下一次 AI 综合生效</span>
         </div>
         <details class="prompt-default">
           <summary class="muted small">查看内置默认提示词</summary>
@@ -521,6 +576,11 @@
           <p class="muted small">最近一次测试错误（可复制后分享）：</p>
           <pre class="preview">{{ aiTestError }}</pre>
           <button class="btn small" @click="copyAIError">复制错误信息</button>
+        </div>
+        <div class="settings-actions">
+          <button class="btn primary" @click="saveAIConfig" :disabled="aiSaving">{{ aiSaving ? '保存中…' : '保存' }}</button>
+          <button class="btn" @click="testAI" :disabled="aiTesting">{{ aiTesting ? '测试中…' : '测试连接' }}</button>
+          <span class="muted small">保存后对下一次 AI 综合生效</span>
         </div>
       </div>
       <div class="panel wide" id="set-vector">
@@ -542,12 +602,12 @@
           <input v-model="vectorForm.model_dir" placeholder="本地模型目录（留空 = models/bge-small-zh-v1.5）">
         </div>
         <template v-if="vectorForm.provider === 'openai'">
-          <div class="row"><input v-model="vectorForm.base_url" placeholder="内网 embedding base_url（如 http://内网:8000/v1）"></div>
+          <div class="row"><input v-model="vectorForm.base_url" placeholder="内网 embedding 接口地址（如 http://内网:8000/v1）"></div>
           <div class="row"><input v-model="vectorForm.model" placeholder="embedding 模型名"></div>
           <div class="row"><input v-model="vectorForm.api_key" type="password" :placeholder="vector.has_key ? '已保存 key（留空不变）' : 'API key（可留空）'"></div>
         </template>
-        <div class="row">
-          <button class="btn" @click="saveVectorConfig" :disabled="vectorSaving">{{ vectorSaving ? '保存中…' : '保存' }}</button>
+        <div class="settings-actions">
+          <button class="btn primary" @click="saveVectorConfig" :disabled="vectorSaving">{{ vectorSaving ? '保存中…' : '保存' }}</button>
           <button class="btn" @click="rebuildVector" :disabled="vectorRebuilding">{{ vectorRebuilding ? '重建中…' : '重建向量索引' }}</button>
           <span class="muted small">{{ vector.error || '' }}</span>
         </div>
@@ -564,7 +624,7 @@
           <span class="badge" :class="rerank.ready ? 'route-main' : ''">{{ rerank.ready ? '已就绪 · ' + rerank.name : '未就绪' }}</span>
         </div>
         <template v-if="rerankForm.provider === 'http'">
-          <div class="row"><input v-model="rerankForm.base_url" placeholder="服务 base_url（如 http://内网:8000）"></div>
+          <div class="row"><input v-model="rerankForm.base_url" placeholder="服务接口地址（如 http://内网:8000）"></div>
           <div class="row">
             <input v-model="rerankForm.model" placeholder="模型名（服务端识别，可留空）">
             <select v-model="rerankForm.api_style">
@@ -582,23 +642,25 @@
         <div class="row">
           <input v-model.number="rerankForm.max_candidates" type="number" min="1" max="100" style="max-width:120px" placeholder="候选数">
           <input v-model.number="rerankForm.top_k" type="number" min="1" max="20" style="max-width:100px" placeholder="保留 Top">
-          <button class="btn" @click="saveRerankConfig" :disabled="rerankSaving">{{ rerankSaving ? '保存中…' : '保存' }}</button>
-          <button class="btn" @click="testRerank" :disabled="rerankTesting">{{ rerankTesting ? '测试中…' : '测试' }}</button>
         </div>
         <p v-if="rerankError" class="warn">{{ rerankError }} <button class="btn small" @click="copyText(rerankError)">复制</button></p>
+        <div class="settings-actions">
+          <button class="btn primary" @click="saveRerankConfig" :disabled="rerankSaving">{{ rerankSaving ? '保存中…' : '保存' }}</button>
+          <button class="btn" @click="testRerank" :disabled="rerankTesting">{{ rerankTesting ? '测试中…' : '测试' }}</button>
+        </div>
       </div>
       <div class="panel wide" id="set-query">
-        <h3>查询改写（P2，可选）</h3>
-        <p class="muted small">用已配置的 AI 从问题中提取 1–3 个检索式，提升同义/换个说法的召回；只影响本机搜索与随手问的本机回答。失败/超时自动回退原查询。</p>
+        <h3>查询智能改写</h3>
+        <p class="muted small">发送前用 AI 把问题拆成多个概念组：同义词组内 OR，不同概念按覆盖度软 AND；原问题始终保留。未配置/失败/超时自动回退原问题，不会增加硬过滤。</p>
         <div class="row">
-          <label class="muted small"><input type="checkbox" v-model="queryForm.enabled"> 启用查询改写</label>
-          <input v-model.number="queryForm.max_queries" type="number" min="1" max="5" style="max-width:110px" placeholder="最多改写数">
+          <label class="muted small"><input type="checkbox" v-model="queryForm.enabled"> 启用发送前拆词</label>
+          <input v-model.number="queryForm.max_queries" type="number" min="1" max="4" style="max-width:110px" placeholder="最多概念组">
           <span class="badge" :class="queryCfg.ready ? 'route-main' : ''">{{ queryCfg.ready ? '已就绪' : (queryCfg.ai_ready ? '未启用' : '需先配置 AI') }}</span>
-          <button class="btn" @click="saveQueryConfig" :disabled="querySaving">{{ querySaving ? '保存中…' : '保存' }}</button>
         </div>
-        <p class="muted small">改写提示词（可自定义；清空则恢复默认）</p>
+        <p class="muted small">智能改写提示词（要求模型输出 JSON；清空则恢复默认）</p>
         <textarea v-model="queryForm.system_prompt" class="prompt-input" rows="6" placeholder="留空 = 使用内置默认提示词"></textarea>
-        <div class="row">
+        <div class="settings-actions">
+          <button class="btn primary" @click="saveQueryConfig" :disabled="querySaving">{{ querySaving ? '保存中…' : '保存' }}</button>
           <button class="btn small" @click="resetQueryPrompt">恢复默认提示词</button>
           <span class="muted small">修改后保存即生效；下一次改写使用新提示词。</span>
         </div>
@@ -615,8 +677,9 @@
     <div class="token-card">
       <h3>本地 API token</h3>
       <p class="muted small">启动日志中打印的 token（X-Chisel-Token），也保存在本机配置目录 config.json（Windows: %USERPROFILE%\.chiselwall\config.json）。输入后本页记住（localStorage），仅本机使用。</p>
-      <input v-model="tokenInput" @keyup.enter="saveToken" placeholder="粘贴 token">
-      <button class="btn primary" @click="saveToken">确定</button>
+      <input v-model="tokenInput" type="password" @input="tokenError = ''" @keyup.enter="saveToken" placeholder="粘贴当前节点的 api_token">
+      <p v-if="tokenError" class="warn token-error">{{ tokenError }}</p>
+      <button class="btn primary" @click="saveToken">校验并进入</button>
     </div>
   </div>
 </div>

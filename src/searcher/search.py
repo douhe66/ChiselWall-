@@ -78,6 +78,8 @@ class SearchHit:
     snippet_text: str
     route: str  # jieba / jieba_and / jieba_or / trigram / like / vector / hybrid
     tier: str = "strong"  # strong | weak（weak 默认折叠、不进 AI 上下文）
+    plan_coverage: int = 0
+    plan_clause_total: int = 0
 
     def to_dict(self) -> dict:
         return asdict(self)
