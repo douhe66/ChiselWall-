@@ -101,6 +101,7 @@ class NodeAgent:
         self.vector_config = self.vector_store_cfg.load()
         self.vector_index = None
         self._build_vector_index()
+        self.remote_searcher = Searcher(self.db, scope="remote", vector_index=self.vector_index)
         # P1 重排（默认关；提问端精排，失败回退 P0）
         from ai.rerank import RerankConfigStore, build_reranker
 
@@ -157,7 +158,7 @@ class NodeAgent:
                 ask_deadline_ms=config.ask_deadline_ms,
                 answer_budget_ms=config.answer_budget_ms,
             ),
-            self.searcher,
+            self.remote_searcher,
             search_fn=self.search_local_expanded,
             rewrite_fn=lambda q: self.rewriter.rewrite(q),
         )
@@ -167,7 +168,8 @@ class NodeAgent:
     def _load_state(self) -> None:
         self._reload_rules()
         for mount in self.db.list_mounts():
-            self._attach_mount(mount)
+            if int(getattr(mount, "enabled", 1)) == 1:
+                self._attach_mount(mount)
 
     def _build_connector(self, kind: str, path: Path) -> Connector:
         if kind == "obsidian":
@@ -254,6 +256,28 @@ class NodeAgent:
         self.service.remove_mount(mount_id)
         self._connectors.pop(mount_id, None)
         self.db.remove_mount(mount_id)
+
+    def set_mount_enabled(self, mount_id: int, enabled: bool) -> dict:
+        mount = self.db.get_mount(mount_id)
+        if mount is None:
+            raise LookupError("挂载不存在")
+        self.db.set_mount_enabled(mount_id, enabled)
+        if enabled:
+            if mount_id not in self._connectors:
+                self._attach_mount(self.db.get_mount(mount_id))
+            else:
+                self.service.enqueue_scan(mount_id, self._connectors[mount_id])
+        else:
+            self.service.remove_mount(mount_id)
+            self._connectors.pop(mount_id, None)
+        return {"ok": True, "mount_id": mount_id, "enabled": bool(enabled)}
+
+    def set_doc_share(self, doc_id: int, state: str) -> dict:
+        doc = self.db.get_doc_by_id(doc_id)
+        if doc is None:
+            raise LookupError("文档不存在")
+        self.db.set_doc_share(doc_id, state)
+        return {"ok": True, "doc": {"doc_id": doc.doc_id, "share_state": state}}
 
     # ---- 排除规则 ----
     def _reload_rules(self) -> None:
@@ -925,6 +949,8 @@ class NodeAgent:
                 require_lexical=cfg.require_lexical,
             )
             self.searcher.vector_index = self.vector_index
+            if hasattr(self, "remote_searcher"):
+                self.remote_searcher.vector_index = self.vector_index
             if self.vector_index.ready:
                 self.indexer.on_indexed = self.vector_index.index_doc
         except Exception:

@@ -90,10 +90,18 @@ class Searcher:
         *,
         snippet_window: int = 150,
         vector_index: Optional[object] = None,
+        scope: str = "local",
     ) -> None:
         self.db = db
         self.snippet_window = snippet_window
         self.vector_index = vector_index
+        self.scope = "remote" if scope == "remote" else "local"
+
+    @property
+    def _policy(self) -> str:
+        if self.scope == "remote":
+            return " AND d.share_state='shared' AND m.enabled=1"
+        return " AND d.share_state!='hidden' AND m.enabled=1"
 
     # ---- 入口 ----
     def search(self, query: str, topk: int = 8) -> list[SearchHit]:
@@ -183,7 +191,9 @@ class Searcher:
         placeholders = ",".join("?" for _ in chunk_ids)
         rows = self.db.query(
             "SELECT c.chunk_id, c.doc_id, c.seq, c.text, d.title, d.rel_path, d.abs_path, d.format, d.mount_id "
-            "FROM chunks c JOIN docs d ON d.doc_id=c.doc_id WHERE c.chunk_id IN (" + placeholders + ")",
+            "FROM chunks c JOIN docs d ON d.doc_id=c.doc_id "
+            "JOIN mounts m ON m.mount_id=d.mount_id "
+            "WHERE d.status='indexed'" + self._policy + " AND c.chunk_id IN (" + placeholders + ")",
             chunk_ids,
         )
         by_id = {int(r["chunk_id"]): r for r in rows}
@@ -378,7 +388,8 @@ class Searcher:
             "SELECT c.chunk_id, c.doc_id, c.seq, c.text, d.title, d.rel_path, "
             "d.abs_path, d.format, d.mount_id, 0.0 AS score "
             "FROM chunks c JOIN docs d ON d.doc_id = c.doc_id "
-            "WHERE d.status='indexed' AND c.text LIKE ? LIMIT ?",
+            "JOIN mounts m ON m.mount_id = d.mount_id "
+            "WHERE d.status='indexed'" + self._policy + " AND c.text LIKE ? LIMIT ?",
             ("%" + q + "%", limit),
         )
         return rows, "like"
@@ -406,7 +417,8 @@ class Searcher:
             "FROM {t} AS f "
             "JOIN chunks AS c ON c.chunk_id = f.rowid "
             "JOIN docs AS d ON d.doc_id = c.doc_id "
-            "WHERE {t} MATCH ? AND d.status='indexed' "
+            "JOIN mounts AS m ON m.mount_id = d.mount_id "
+            "WHERE {t} MATCH ? AND d.status='indexed'" + self._policy + " "
             "ORDER BY score LIMIT ?"
         ).format(t=table)
         return self.db.query(sql, (match, limit))

@@ -58,6 +58,8 @@ createApp({
       askStream: null,
       askAutoSummary: localStorage.getItem("chisel_ask_auto_summary") !== "0",
       askGroupsOpen: false,
+      expandedGroup: "",
+      privacyNoticeClosed: localStorage.getItem("chisel_privacy_notice") === "1",
       followupText: "",
       followupBusy: false,
       // M8 AI 会话
@@ -1103,6 +1105,36 @@ createApp({
         if (this.activeGroup && this.activeGroup.group_id === g.group_id) { this.activeGroup = null; this.groupMembers = []; }
         this.refresh();
       } catch (e) { this.errorMsg = String(e.message || e); }
+    },
+    dismissPrivacyNotice() {
+      this.privacyNoticeClosed = true;
+      localStorage.setItem("chisel_privacy_notice", "1");
+    },
+    async toggleMount(m) {
+      try {
+        const r = await this.api("/api/mounts/" + m.mount_id, {
+          method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: m.enabled === false }),
+        });
+        m.enabled = !!r.enabled;
+        await this.refresh();
+        this.showToast(r.enabled ? "挂载已启用" : "挂载已暂停；不参与搜索，文档仍可预览/打开", "info");
+      } catch (e) {
+        this.showToast("挂载状态修改失败：" + (e.message || e), "error");
+      }
+    },
+    async setDocShare(d, state) {
+      try {
+        await this.api("/api/docs/" + d.doc_id + "/sharing", {
+          method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ state }),
+        });
+        d.share_state = state;
+        this.showToast(state === "shared" ? "已设为共享" : (state === "private" ? "已设为仅本机：远端不可搜，本机仍可搜" : "已隐藏：本机与远端都不参与搜索"), "info");
+      } catch (e) {
+        this.showToast("共享状态修改失败：" + (e.message || e), "error");
+      }
+    },
+    toggleGroupMembers(name) {
+      this.expandedGroup = this.expandedGroup === name ? "" : name;
     },
     selectGroup(g) {
       this.activeGroup = g;

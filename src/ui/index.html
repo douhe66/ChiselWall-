@@ -76,6 +76,11 @@
       <kbd class="search-kbd">Enter</kbd>
       <button class="btn primary" @click="doSearch" :disabled="busy">{{ busy ? '搜索中…' : '搜索' }}</button>
     </section>
+    <div v-if="!privacyNoticeClosed" class="privacy-note">
+      <div class="privacy-note-icon">!</div>
+      <div class="privacy-note-text"><strong>共享前请确认</strong><span>笔记可能包含敏感内容。请在右侧文档列表把单篇设为「仅本机」或「隐藏」；预览、定位和打开仍可正常使用。</span></div>
+      <button class="btn small" @click="dismissPrivacyNotice">知道了</button>
+    </div>
     <section class="results" v-if="searched">
       <div class="muted small">{{ hits.length ? '命中 ' + hits.length + ' 条（topk）' : '没有命中，试试换关键词' }}</div>
       <article class="hit" v-for="h in strongHits" :key="h.doc_id + ':' + h.chunk_seq">
@@ -186,14 +191,16 @@
         </div>
         <p class="muted small" v-if="activeGroup">当前分组：{{ activeGroup.name }} · 只显示该分组内的挂载</p>
         <div class="mount-list">
-          <article class="mount-item" v-for="m in visibleMounts()" :key="m.mount_id">
+          <article class="mount-item" :class="{ paused: m.enabled === false }" v-for="m in visibleMounts()" :key="m.mount_id">
             <div class="mount-top">
               <span class="badge kind">{{ kindLabel(m.kind) }}</span>
               <strong>{{ m.path }}</strong>
               <span class="mount-count">{{ m.docs }} 篇</span>
+              <span v-if="m.enabled === false" class="badge">已暂停</span>
             </div>
             <div class="mount-actions">
               <button class="btn small" @click="filterMount(m)">{{ docsFilter.mountId === m.mount_id ? '取消筛选' : '筛选文档' }}</button>
+              <button class="btn small" @click="toggleMount(m)">{{ m.enabled === false ? '启用' : '暂停' }}</button>
               <button class="btn small danger" @click="removeMount(m.mount_id)">移除</button>
             </div>
           </article>
@@ -218,13 +225,18 @@
           </select>
         </div>
         <div class="doc-scroll">
-          <article class="doc-item" v-for="d in docs.slice(0, 200)" :key="d.doc_id">
+          <article class="doc-item" :class="{ 'doc-muted': (d.share_state || 'shared') !== 'shared' }" v-for="d in docs.slice(0, 200)" :key="d.doc_id">
             <div class="doc-main">
               <span class="badge">{{ d.format }}</span>
               <span class="badge status" :class="'st-' + d.status">{{ statusLabel(d.status) }}</span>
               <strong>{{ d.title }}</strong>
               <span class="doc-path">{{ d.rel_path }}</span>
               <div class="doc-actions">
+                <select class="share-select" :value="d.share_state || 'shared'" @change="setDocShare(d, $event.target.value)" title="共享状态">
+                  <option value="shared">共享</option>
+                  <option value="private">仅本机</option>
+                  <option value="hidden">隐藏</option>
+                </select>
                 <button class="btn small" @click="toggleDocPreview(d)">{{ d.previewOpen ? '收起' : '预览' }}</button>
                 <button class="btn small" @click="openLocation(d.doc_id)">位置</button>
                 <button class="btn small" @click="openFile(d)">打开</button>
@@ -360,10 +372,19 @@
               <button class="btn small dock-toggle" @click="askGroupsOpen = !askGroupsOpen">{{ askGroupsOpen ? '收起' : '管理提问组' }} · {{ relayGroupInfo.length }}</button>
             </div>
             <div v-if="askGroupsOpen" class="ask-group-panel">
-              <label v-for="g in relayGroupInfo" :key="g.name" class="ask-group-option">
-                <input type="checkbox" :value="g.name" v-model="askGroupsSel" @change="askGroupsTouched = true">
-                <span class="ask-group-text"><strong>{{ g.name }}</strong><small>{{ g.description || '（暂无描述）' }} · 在线 {{ g.online || 0 }} 人</small></span>
-              </label>
+              <template v-for="g in relayGroupInfo" :key="g.name">
+                <div class="ask-group-row">
+                  <label class="ask-group-option">
+                    <input type="checkbox" :value="g.name" v-model="askGroupsSel" @change="askGroupsTouched = true">
+                    <span class="ask-group-text"><strong>{{ g.name }}</strong><small>{{ g.description || '（暂无描述）' }} · 在线 {{ g.online || 0 }} 人</small></span>
+                  </label>
+                  <button type="button" class="btn small group-member-btn" @click.stop="toggleGroupMembers(g.name)">{{ expandedGroup === g.name ? '收起' : ((g.members || []).length || g.online || 0) + ' 人' }}</button>
+                </div>
+                <div v-if="expandedGroup === g.name" class="group-member-list">
+                  <span v-for="n in (g.members || [])" :key="n" class="member-chip"><span class="status-dot online"></span>@{{ n }}</span>
+                  <span v-if="!(g.members || []).length" class="muted small">暂无在线成员</span>
+                </div>
+              </template>
               <div v-if="!relayGroupInfo.length" class="muted small" style="padding:8px">还没有组，先在设置里建组。</div>
             </div>
           </div>

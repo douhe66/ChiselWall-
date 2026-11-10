@@ -148,9 +148,11 @@ class RelayHub:
     def groups_view(self) -> list[dict]:
         """全部组（含无人加入的组）：名称 + 描述 + 在线人数，按名称排序。"""
         counts: dict[str, int] = {}
+        members: dict[str, list[str]] = {}
         for c in self.clients.values():
             for g in c.groups:
                 counts[g] = counts.get(g, 0) + 1
+                members.setdefault(g, []).append(c.user)
         out = []
         for name in sorted(self.group_meta):
             meta = self.group_meta[name]
@@ -158,6 +160,7 @@ class RelayHub:
                 "name": name,
                 "description": meta.get("description") or "",
                 "online": counts.get(name, 0),
+                "members": sorted(members.get(name, [])),
             })
         return out
 

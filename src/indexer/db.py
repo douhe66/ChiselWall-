@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS mounts(
   mount_id INTEGER PRIMARY KEY AUTOINCREMENT,
   kind TEXT NOT NULL CHECK(kind IN ('directory','obsidian','file','siyuan')),
   path TEXT NOT NULL UNIQUE,
-  added_at TEXT NOT NULL
+  added_at TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS exclude_rules(
   rule_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -67,6 +68,7 @@ CREATE TABLE IF NOT EXISTS docs(
   size INTEGER,
   hash TEXT,
   status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','indexed','error','excluded')),
+  share_state TEXT NOT NULL DEFAULT 'shared' CHECK(share_state IN ('shared','private','hidden')),
   error TEXT,
   chunk_count INTEGER NOT NULL DEFAULT 0,
   truncated INTEGER NOT NULL DEFAULT 0,
@@ -106,6 +108,7 @@ class MountRecord:
     kind: str
     path: str
     added_at: str
+    enabled: int = 1
 
 
 @dataclass(frozen=True)
@@ -124,6 +127,7 @@ class DocRecord:
     chunk_count: int
     truncated: bool
     updated_at: Optional[str]
+    share_state: str = "shared"
 
 
 class IndexDB:
@@ -152,6 +156,10 @@ class IndexDB:
            CHECK，需重建 mounts 表（保留行数据与自增 id）。
         要求 SQLite ≥ 3.35（Python 3.10+ 自带版本均满足）。
         """
+        doc_cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(docs)").fetchall()}
+        if "share_state" not in doc_cols:
+            self._conn.execute("ALTER TABLE docs ADD COLUMN share_state TEXT NOT NULL DEFAULT 'shared'")
+            self._conn.commit()
         cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(chunks)").fetchall()}
         if "text_jieba" in cols:
             self._conn.execute("ALTER TABLE chunks DROP COLUMN text_jieba")
@@ -181,6 +189,10 @@ class IndexDB:
             self._conn.execute("PRAGMA foreign_keys=ON")
             self._conn.commit()
             log.info("mounts table rebuilt")
+        mount_cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(mounts)").fetchall()}
+        if "enabled" not in mount_cols:
+            self._conn.execute("ALTER TABLE mounts ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1")
+            self._conn.commit()
 
     def close(self) -> None:
         with self._lock:
@@ -519,6 +531,18 @@ class IndexDB:
         )
         return [dict(r) for r in rows]
 
+    def set_mount_enabled(self, mount_id: int, enabled: bool) -> None:
+        with self._lock:
+            self._conn.execute("UPDATE mounts SET enabled=? WHERE mount_id=?", (1 if enabled else 0, int(mount_id)))
+            self._conn.commit()
+
+    def set_doc_share(self, doc_id: int, state: str) -> None:
+        if state not in ("shared", "private", "hidden"):
+            raise ValueError("share_state 须为 shared/private/hidden")
+        with self._lock:
+            self._conn.execute("UPDATE docs SET share_state=? WHERE doc_id=?", (state, int(doc_id)))
+            self._conn.commit()
+
     def list_docs(
         self,
         status: Optional[str] = None,
@@ -527,8 +551,8 @@ class IndexDB:
         group_id: Optional[int] = None,
     ) -> list[dict]:
         """文档列表（limit=None 表示全量；支持按挂载/分组过滤，M3-2）。"""
-        cols = ("doc_id, mount_id, rel_path, abs_path, title, format, status, chunk_count, "
-                "mtime, size, hash")
+        cols = ("doc_id, mount_id, rel_path, abs_path, title, format, status, share_state, "
+                "chunk_count, mtime, size, hash")
         sql = "SELECT " + cols + " FROM docs d"
         where: list[str] = []
         params: list = []

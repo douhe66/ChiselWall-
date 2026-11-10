@@ -59,7 +59,7 @@ def _sse_response(events):
 #   - 页脚版本展示
 #   - /api/health 的 version 字段
 # 任何 UI 改动必须 bump 此值，否则用户浏览器仍可能命中旧缓存。
-APP_VERSION = "0.9.1"
+APP_VERSION = "0.9.3"
 
 # 健康检查路径：公开（不含知识内容）
 PUBLIC_PATHS = {"/api/health", "/"}
@@ -68,6 +68,14 @@ PUBLIC_PATHS = {"/api/health", "/"}
 class MountIn(BaseModel):
     path: str
     kind: Optional[str] = None
+
+
+class MountPatchIn(BaseModel):
+    enabled: bool
+
+
+class DocShareIn(BaseModel):
+    state: str
 
 
 class RuleIn(BaseModel):
@@ -243,7 +251,7 @@ def create_app(agent, token: str = "") -> FastAPI:
             n = agent.db.query(
                 "SELECT COUNT(*) AS n FROM docs WHERE mount_id=?", (m.mount_id,)
             )[0]["n"]
-            out.append({"mount_id": m.mount_id, "kind": m.kind, "path": m.path, "docs": n})
+            out.append({"mount_id": m.mount_id, "kind": m.kind, "path": m.path, "docs": n, "enabled": bool(m.enabled)})
         return out
 
     @app.post("/api/mounts", dependencies=[Depends(require_token)])
@@ -252,6 +260,13 @@ def create_app(agent, token: str = "") -> FastAPI:
             return agent.add_mount(body.path, body.kind)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.patch("/api/mounts/{mount_id}", dependencies=[Depends(require_token)])
+    def patch_mount(mount_id: int, body: MountPatchIn) -> dict:
+        try:
+            return agent.set_mount_enabled(mount_id, body.enabled)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
 
     @app.delete("/api/mounts/{mount_id}", dependencies=[Depends(require_token)])
     def remove_mount(mount_id: int) -> dict:
@@ -289,6 +304,15 @@ def create_app(agent, token: str = "") -> FastAPI:
             raise HTTPException(status_code=404, detail=str(exc))
         except PermissionError as exc:
             raise HTTPException(status_code=403, detail=str(exc))
+
+    @app.patch("/api/docs/{doc_id}/sharing", dependencies=[Depends(require_token)])
+    def patch_doc_sharing(doc_id: int, body: DocShareIn) -> dict:
+        try:
+            return agent.set_doc_share(doc_id, body.state)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
 
     @app.get("/api/docs/{doc_id}/open-location", dependencies=[Depends(require_token)])
     def open_location(doc_id: int) -> dict:

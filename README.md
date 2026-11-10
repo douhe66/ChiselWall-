@@ -17,14 +17,14 @@
 
 ### 核心特性
 
-- **随手记**：挂载本地目录/文件，支持思源（.sy）、Obsidian、Markdown、TXT、DOCX、XLSX、PDF、CSV 等；只建索引，不复制、不改动原文件；支持排除规则（目录/glob/单文件）与增量索引。
-- **随手问**：向在线同事广播问题，聚合各自命中的知识；**会话列表/历史持久化**，首问广播，后续追问基于上一轮结果、不重复广播。
+- **随手记**：挂载本地目录/文件（目录递归索引），支持思源（.sy）、Obsidian、Markdown、TXT、DOCX、XLSX、PDF、CSV 等；只建索引，不复制、不改动原文件；支持排除规则、增量索引、挂载暂停/恢复。单篇可设 **共享 / 仅本机 / 隐藏**：仅本机仍可本地搜索、远端不可见；隐藏本机也不参与搜索；两者都保留预览/定位/打开。
+- **随手问**：向在线同事广播问题，聚合各自命中的知识；**会话列表/历史持久化**，首问广播，后续追问基于上一轮结果、不重复广播；提问组可展开查看在线成员。
 - **搜索结果先看**：右侧独立结果栏展示命中原文、来源同事、耗时与片段；支持预览全文、打开所在位置、直接打开本地文件、远端预览。
 - **AI 综合**：可选。提问框旁勾选「AI 综合」自动生成；不勾选则先看结果，再点会话级「AI 综合」按钮。支持 **SSE 流式输出**，上下文预算默认 24000 字符（可调），长文档保留开头/命中窗口/结尾，每轮引用独立落库。
 - **混合检索**：SQLite FTS5 + jieba 中文分词 + 向量检索（bge-small-zh）+ RRF 融合；弱相关结果单独折叠，不进入 AI 上下文。
 - **可选重排（rerank）**：HTTP（Cohere/Jina/TEI 兼容）或本地 ONNX；带分数缓存、空闲自动卸载。
 - **可选查询改写**：用已配置的 LLM 把问题改写成 1–3 条检索式；默认关，提示词可在设置页自定义。
-- **隐私边界**：中心只路由；只有在线节点参与检索；排除规则为"拒绝并集"；不支持的格式会进入失败列表，不会静默丢失。
+- **隐私边界**：中心只路由；只有在线节点参与检索；排除规则为"拒绝并集"；单篇共享状态与挂载暂停都会同时过滤本地/远端检索；不支持的格式会进入失败列表，不会静默丢失。敏感内容自动识别尚未实现（方案见 docs/design/sensitive-content-detection.md），当前由用户手动决定共享。
 
 ### 架构
 
@@ -129,7 +129,7 @@ python tests/make_fixtures.py
 python -m unittest discover -s tests -p "test_*.py"
 ```
 
-当前：**293 项测试通过**（Windows）。评测脚本：
+当前：**297 项测试通过**（Windows）。评测脚本：
 
 ```bash
 python tests/eval_retrieval.py --db ~/.chiselwall/chiselwall.db
@@ -162,6 +162,7 @@ models/       本地向量/重排模型（不提交 Git）
 - 查询改写：[docs/design/p2-query-rewrite.md](docs/design/p2-query-rewrite.md)
 - 向量后端：[docs/design/p3-vector-backend.md](docs/design/p3-vector-backend.md)
 - UI 设计系统：[docs/design/ui-refresh.md](docs/design/ui-refresh.md)
+- 共享/挂载暂停：[docs/design/sharing-and-mounts.md](docs/design/sharing-and-mounts.md)
 - AI 流式/上下文：[docs/design/ai-streaming-context.md](docs/design/ai-streaming-context.md)
 - 验收报告：[docs/review/](docs/review/)
 - 未完成事项：[docs/planning/open-items.md](docs/planning/open-items.md)
@@ -192,8 +193,8 @@ It closes the "knowledge is on a colleague's laptop, but nobody knows" gap witho
 
 ### Key features
 
-- **Local notes**: mount local folders/files; supports SiYuan (.sy), Obsidian, Markdown, TXT, DOCX, XLSX, PDF, CSV; index-only, never copies or modifies originals; exclude rules and incremental indexing.
-- **Ask colleagues**: broadcast a question to online peers, aggregate their local matches. **Persistent chat-style sessions**: the first question broadcasts; follow-ups reuse the previous result set without re-broadcasting.
+- **Local notes**: mount local folders/files (recursive), supports SiYuan (.sy), Obsidian, Markdown, TXT, DOCX, XLSX, PDF, CSV; index-only, never copies or modifies originals; exclude rules, incremental indexing, pause/resume mounts. Per-note sharing: **shared / local-only / hidden**; local-only stays searchable locally but invisible remotely; hidden is excluded from local search too; preview/open always work.
+- **Ask colleagues**: broadcast a question to online peers, aggregate their local matches. **Persistent chat-style sessions**: the first question broadcasts; follow-ups reuse the previous result set without re-broadcasting; group rows expand to show online members.
 - **Results first**: a dedicated right-hand panel shows matched snippets, source peers, elapsed time, route, and local/remote preview/open actions.
 - **AI synthesis**: optional. Check **AI synthesis** next to the ask button to generate automatically; otherwise inspect results first and press the session-level **AI synthesis** button. Answers include citations.
 - **Hybrid retrieval**: SQLite FTS5 + jieba + vector search (bge-small-zh) + RRF; weak hits are folded and excluded from AI context.
@@ -286,7 +287,7 @@ python tests/make_fixtures.py
 python -m unittest discover -s tests -p "test_*.py"
 ```
 
-Currently **293 tests pass** on Windows. Evaluation:
+Currently **297 tests pass** on Windows. Evaluation:
 
 ```bash
 python tests/eval_retrieval.py --db ~/.chiselwall/chiselwall.db
