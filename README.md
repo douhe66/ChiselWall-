@@ -17,7 +17,7 @@
 
 ### 核心特性
 
-- **随手记**：挂载本地目录/文件（目录递归索引），支持思源（.sy）、Obsidian、Markdown、TXT、DOCX、XLSX、PDF、CSV 等；只建索引，不复制、不改动原文件；支持排除规则、增量索引、挂载暂停/恢复。单篇可设 **共享 / 仅本机 / 隐藏**：仅本机仍可本地搜索、远端不可见；隐藏本机也不参与搜索；两者都保留预览/定位/打开。
+- **随手记**：挂载本地目录/文件（目录递归索引），支持思源（.sy）、Obsidian、Markdown、TXT、DOCX、XLSX、PDF、CSV 等；只建索引，不复制、不改动原文件；支持排除规则、增量索引、挂载暂停/恢复。单篇可设 **共享 / 仅本机 / 隐藏**：仅本机仍可本地搜索、远端不可见；隐藏本机也不参与搜索；两者都保留预览/定位/打开。思源只监视 data/，Linux 下不会为 repo/history/conf/temp 注册 inotify watch。
 - **随手问**：向在线同事广播问题，聚合各自命中的知识；**会话列表/历史持久化**，首问广播，后续追问基于上一轮结果、不重复广播；提问组可展开查看在线成员。
 - **搜索结果先看**：右侧独立结果栏展示命中原文、来源同事、耗时与片段；支持预览全文、打开所在位置、直接打开本地文件、远端预览。
 - **AI 综合**：可选。提问框旁勾选「AI 综合」自动生成；不勾选则先看结果，再点会话级「AI 综合」按钮。支持 **SSE 流式输出**，上下文预算默认 24000 字符（可调），长文档保留开头/命中窗口/结尾，每轮引用独立落库。
@@ -129,7 +129,7 @@ python tests/make_fixtures.py
 python -m unittest discover -s tests -p "test_*.py"
 ```
 
-当前：**297 项测试通过**（Windows）。评测脚本：
+当前：**301 项测试通过**（Windows）。评测脚本：
 
 ```bash
 python tests/eval_retrieval.py --db ~/.chiselwall/chiselwall.db
@@ -163,6 +163,7 @@ models/       本地向量/重排模型（不提交 Git）
 - 向量后端：[docs/design/p3-vector-backend.md](docs/design/p3-vector-backend.md)
 - UI 设计系统：[docs/design/ui-refresh.md](docs/design/ui-refresh.md)
 - 共享/挂载暂停：[docs/design/sharing-and-mounts.md](docs/design/sharing-and-mounts.md)
+- Linux inotify 修复：[docs/review/linux-inotify-fix.md](docs/review/linux-inotify-fix.md)
 - AI 流式/上下文：[docs/design/ai-streaming-context.md](docs/design/ai-streaming-context.md)
 - 验收报告：[docs/review/](docs/review/)
 - 未完成事项：[docs/planning/open-items.md](docs/planning/open-items.md)
@@ -287,7 +288,7 @@ python tests/make_fixtures.py
 python -m unittest discover -s tests -p "test_*.py"
 ```
 
-Currently **297 tests pass** on Windows. Evaluation:
+Currently **301 tests pass** on Windows. Evaluation:
 
 ```bash
 python tests/eval_retrieval.py --db ~/.chiselwall/chiselwall.db

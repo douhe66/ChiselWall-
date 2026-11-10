@@ -218,6 +218,21 @@ class SiyuanConnector(Connector):
     def formats(self) -> frozenset[str]:
         return frozenset({"sy"})
 
+    def watch_root(self) -> Optional[Path]:
+        data = self.root / "data"
+        return data if self.root.is_dir() and data.is_dir() else None
+
+    def watch_allowed(self, path: Path) -> bool:
+        """只监视 data/ 下非编辑器内部目录（repo/history/conf/temp/assets 等不注册 watch）。"""
+        data = self.root / "data"
+        try:
+            rel = path.resolve().relative_to(data.resolve())
+        except (OSError, ValueError):
+            return False
+        if path.is_symlink():
+            return False
+        return not any(part in EXCLUDED_WORKSPACE_DIRS or part.startswith(".") for part in rel.parts)
+
     def default_excludes(self) -> list[str]:
         return [
             "data/.siyuan/**",

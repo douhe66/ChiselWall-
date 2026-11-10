@@ -146,32 +146,54 @@ class WatchService:
         self.jobs = JobQueue()
         self.cpu_threshold = cpu_threshold
         self.worker_yield = worker_yield
-        self._mounts: dict[int, tuple[Connector, Observer]] = {}
+        # mount_id -> (connector, observer, handler, watch_root, recursive_child_paths)
+        self._mounts: dict[int, tuple[Connector, Observer, _Handler, Path, set[str]]] = {}
         self._lock = threading.Lock()
         self._worker: Optional[IndexWorker] = None
 
     # ---- 挂载管理 ----
     def add_mount(self, mount_id: int, connector: Connector) -> None:
-        """起观察器：目录递归监视；单文件挂载监视其父目录并过滤事件。"""
+        """起观察器：只监视连接器声明的根，顶层排除目录不注册 watch。
+
+        关键点：watchdog 的 recursive=True 会遍历整棵子树并注册 inotify watch，
+        handler 的 ignore 只在事件到达后过滤，挡不住 watch 注册。思源工作区的
+        repo/history/conf/temp 等会因此产生数千 watch；这里改为：
+          - 根目录只做非递归 watch（捕获新建/改名顶层目录）；
+          - 只对允许的顶层子目录做 recursive watch；
+          - 思源的 watch_root 进一步收窄到 data/。
+        """
         root = connector.root
-        watch_dir = root if root.is_dir() else root.parent
+        watch_root = connector.watch_root()
+        if watch_root is None or not watch_root.is_dir():
+            log.warning("watch mount %s skipped: watch root unavailable (%s)", mount_id, root)
+            return
         handler = _Handler(
             on_file=lambda ev: self._file_event(mount_id, connector, ev),
             on_dir=lambda ev: self._dir_event(mount_id, connector, ev),
         )
         observer = Observer()
         observer.daemon = True
-        observer.schedule(handler, str(watch_dir), recursive=root.is_dir())
+        # 根目录本身非递归：新增/改名顶层目录能被捕获，但不会把顶层排除目录卷进来
+        observer.schedule(handler, str(watch_root), recursive=False)
+        children: set[str] = set()
+        if not root.is_file():
+            try:
+                for child in watch_root.iterdir():
+                    if child.is_dir() and not child.is_symlink() and connector.watch_allowed(child):
+                        observer.schedule(handler, str(child), recursive=True)
+                        children.add(str(child.resolve()))
+            except OSError:
+                log.exception("scan watch children failed: %s", watch_root)
         observer.start()
         with self._lock:
-            self._mounts[mount_id] = (connector, observer)
-        log.info("watch mount %s -> %s", mount_id, root)
+            self._mounts[mount_id] = (connector, observer, handler, watch_root, children)
+        log.info("watch mount %s -> %s (root non-recursive, %d child watches)", mount_id, watch_root, len(children))
 
     def remove_mount(self, mount_id: int) -> None:
         with self._lock:
             item = self._mounts.pop(mount_id, None)
         if item is not None:
-            _conn, observer = item
+            _conn, observer, _handler, _root, _children = item
             observer.stop()
             observer.join(timeout=5)
 
@@ -232,14 +254,59 @@ class WatchService:
         if kind == "moved":
             rel_src = self._rel(connector, event.src_path)
             rel_dst = self._rel(connector, event.dest_path)
+            self._forget_child_watch(mount_id, event.src_path)
+            self._ensure_child_watch(mount_id, connector, event.dest_path)
             if rel_src is not None:
                 self._schedule(mount_id, connector, "d", rel_src)
             if rel_dst is not None and rel_dst != rel_src:
                 self._schedule(mount_id, connector, "d", rel_dst)
             return
+        if kind == "created":
+            self._ensure_child_watch(mount_id, connector, event.src_path)
+        elif kind == "deleted":
+            self._forget_child_watch(mount_id, event.src_path)
         rel = self._rel(connector, event.src_path)
         if rel is not None:
             self._schedule(mount_id, connector, "d", rel)
+
+    def _ensure_child_watch(self, mount_id: int, connector: Connector, src: str) -> None:
+        """顶层目录新建/移入时补一个 recursive watch；已存在的树不再重复注册。"""
+        if connector.root.is_file():
+            return
+        try:
+            path = Path(src).resolve()
+            watch_root = connector.watch_root()
+            if watch_root is None or path.parent != watch_root.resolve():
+                return
+            if not path.is_dir() or not connector.watch_allowed(path):
+                return
+        except (OSError, ValueError):
+            return
+        with self._lock:
+            item = self._mounts.get(mount_id)
+            if item is None:
+                return
+            _conn, observer, handler, _root, children = item
+            key = str(path)
+            if key in children:
+                return
+            try:
+                observer.schedule(handler, key, recursive=True)
+            except (OSError, RuntimeError):
+                log.exception("add watch failed: %s", key)
+                return
+            children.add(key)
+        log.info("watch new child %s -> %s", mount_id, key)
+
+    def _forget_child_watch(self, mount_id: int, src: str) -> None:
+        try:
+            key = str(Path(src).resolve())
+        except OSError:
+            return
+        with self._lock:
+            item = self._mounts.get(mount_id)
+            if item is not None:
+                item[4].discard(key)
 
     def _schedule(self, mount_id: int, connector: Connector, prefix: str, rel: str) -> None:
         key = prefix + ":" + str(mount_id) + ":" + rel

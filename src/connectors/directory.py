@@ -85,6 +85,16 @@ class DirectoryConnector(Connector):
         self._is_file_root: bool = self.root.is_file()
 
     # ---- 协议 ----
+    def watch_allowed(self, path: Path) -> bool:
+        if not super().watch_allowed(path):
+            return False
+        if self._is_file_root or path.resolve() == self.root:
+            return True
+        if path.is_symlink():
+            return False
+        rel = self._rel(path.resolve())
+        return self.engine.is_excluded(path.resolve(), rel, is_dir=True) is None
+
     def formats(self) -> frozenset[str]:
         return SUPPORTED_EXTS
 

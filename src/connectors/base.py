@@ -113,6 +113,21 @@ class Connector(ABC):
         """连接器默认排除 glob（设计 §6）。内置规则在 ExclusionEngine。"""
         return []
 
+    # ---- 监视范围（watchdog 用） ----
+    def watch_root(self) -> Optional[Path]:
+        """需要监视的根目录；单文件挂载监视父目录。None 表示不监视。"""
+        return self.root if self.root.is_dir() else self.root.parent
+
+    def watch_allowed(self, path: Path) -> bool:
+        """该目录是否允许注册 watch（默认只允许挂载根及其子目录）。"""
+        try:
+            p = path.resolve()
+        except OSError:
+            return False
+        if self.root.is_file():
+            return p == self.root.parent
+        return p == self.root or self.root in p.parents
+
     # ---- 公共工具 ----
     def resolve(self, rel_path: str) -> Path:
         """rel_path -> 绝对路径；必须位于挂载根之内（防路径穿越）。
