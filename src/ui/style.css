@@ -331,8 +331,9 @@ textarea { resize: vertical; line-height: 1.6; }
 .chat-toolbar strong { font-size: 12.5px; }
 .chat-toolbar > .muted.small { flex: 1; min-width: 160px; }
 .chat-toolbar .btn { margin-left: 0; }
-.chat-messages { flex: 1; min-height: 0; overflow: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
-.chat-msg { width: fit-content; max-width: 86%; align-self: flex-start; border: 1px solid var(--border); border-radius: 12px; padding: 10px 13px; background: var(--surface-2); }
+.chat-messages { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+.chat-messages > * { flex: 0 0 auto; }
+.chat-msg { width: fit-content; max-width: 86%; align-self: flex-start; flex: 0 0 auto; border: 1px solid var(--border); border-radius: 12px; padding: 10px 13px; background: var(--surface-2); }
 .chat-msg.user { align-self: flex-end; background: var(--accent-soft); border-color: var(--accent-line); border-bottom-right-radius: 4px; }
 .chat-msg.assistant { align-self: flex-start; border-bottom-left-radius: 4px; }
 .chat-role { font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); margin-bottom: 4px; }
@@ -575,3 +576,14 @@ textarea { resize: vertical; line-height: 1.6; }
 .settings-actions .btn.primary { min-width:82px; }
 .settings-actions .muted { margin-left:2px; }
 .placeholder-label { flex:0 0 auto; font-size:11px; color:var(--muted); }
+.ask-pending { opacity: .82; border-style: dashed; }
+.ask-pending .badge { animation: soft-pulse 1.6s ease-in-out infinite; }
+@keyframes soft-pulse { 50% { opacity: .55; } }
+.plan-details { margin-top: 5px; }
+.plan-details summary { cursor: pointer; width: fit-content; }
+.plan-more { color: var(--accent); margin-left: 4px; }
+.plan-clauses { display: flex; flex-direction: column; gap: 5px; margin-top: 6px; }
+.plan-clause { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; }
+.plan-term { padding: 2px 7px; border: 1px solid var(--border); border-radius: 99px; font-size: 10.5px; color: var(--text-2); background: rgba(148,163,184,.04); }
+.plan-paraphrases { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+.plan-paraphrase { font-size: 10.5px; color: var(--muted); }

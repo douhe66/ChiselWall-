@@ -351,7 +351,19 @@
                 <span v-if="t.payload.responded" class="badge">返回 {{ t.payload.responded }}/{{ t.payload.expected }} 位</span>
                 <span v-for="a in (t.payload.answers || [])" :key="a.node" class="badge kind">@{{ a.node }} 检索 {{ formatElapsed(a.elapsed_ms) }} · {{ a.hit_count }} 条</span>
                 <span v-if="t.payload.search_text && t.payload.search_text !== t.content" class="muted small">实际检索：{{ t.payload.search_text }}</span>
-                <span v-if="t.payload.plan && t.payload.plan.expression" class="muted small">智能改写：{{ t.payload.plan.expression }}</span>
+                <details v-if="t.payload.plan && (t.payload.plan.clauses || []).length" class="plan-details">
+                  <summary class="muted small">智能改写 · {{ (t.payload.plan.clauses || []).length }} 组 <span class="plan-more">查看改写词</span></summary>
+                  <div class="plan-clauses">
+                    <span v-for="(g, gi) in (t.payload.plan.clauses || [])" :key="gi" class="plan-clause">
+                      <span class="badge">组 {{ gi + 1 }}</span>
+                      <span v-for="term in (g.terms || [])" :key="term" class="plan-term">{{ term }}</span>
+                    </span>
+                  </div>
+                  <div v-if="(t.payload.plan.paraphrases || []).length" class="plan-paraphrases">
+                    <span class="muted small">补充问句：</span>
+                    <span v-for="p in t.payload.plan.paraphrases" :key="p" class="plan-paraphrase">{{ p }}</span>
+                  </div>
+                </details>
               </div>
               <div v-if="t.role === 'assistant' && t.payload" class="ask-turn-meta">
                 <span v-if="t.payload.elapsed_ms" class="muted small">AI 用时 {{ t.payload.elapsed_ms }}ms · {{ t.payload.model }}<template v-if="t.payload.context_chars"> · 上下文 {{ t.payload.context_chars }} 字</template></span>
@@ -362,6 +374,11 @@
               </div>
               <div v-if="t.role === 'user' && t.payload && (t.payload.aggregated || []).length" class="muted small">本轮命中 {{ t.payload.aggregated.length }} 处（右侧查看原文）</div>
 
+            </div>
+            <div v-if="askPendingText" class="chat-msg user ask-pending">
+              <div class="chat-role">我</div>
+              <div class="md-preview" v-html="renderMarkdown(askPendingText)"></div>
+              <div class="ask-turn-meta"><span class="badge">{{ askPendingPhase || askProgress || '正在处理…' }}</span></div>
             </div>
             <div v-if="askStream && askStream.active" class="chat-msg assistant streaming">
               <div class="chat-role">回答 · 生成中</div>

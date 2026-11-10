@@ -69,6 +69,8 @@ createApp({
       followupText: "",
       followupBusy: false,
       askFollowupSearch: false,
+      askPendingText: "",
+      askPendingPhase: "",
       // M8 AI 会话
       chatSessions: [],
       chatSession: null,
@@ -230,7 +232,7 @@ createApp({
     },
     async switchPage(page) {
       this.page = page;
-      if (page === "ask") { this.loadRelay(); this.loadAI(); this.loadAskSessions(); }
+      if (page === "ask") { this.loadRelay(); this.loadAI(); this.loadAskSessions(); this.loadQuery(); }
       if (page === "chat") { this.loadChatSessions(); this.loadAI(); }
       if (page === "settings") { this.loadRelayConfig(); this.loadRelay(); this.loadAI(); this.loadVector(); this.loadRerank(); this.loadQuery(); }
     },
@@ -507,6 +509,11 @@ createApp({
           await this.loadAskSessions();
         }
         const sid = this.askSession.id;
+        this.askPendingText = text;
+        this.askPendingPhase = (this.queryCfg.enabled && this.queryCfg.ready) ? "正在智能改写问题…" : "正在广播问题…";
+        this.askProgress = this.askPendingPhase;
+        this.askInput = "";
+        this.scrollChat();
         const forceSearch = !this.askHasTurns() || this.askFollowupSearch || !this.askLatestHits().length;
         if (forceSearch) {
           this.askProgress = "正在拆分检索词并广播…";
@@ -514,28 +521,36 @@ createApp({
             method: "POST", headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ text, groups: this.askGroupsSel }),
           });
-          this.askInput = "";
           this.askFollowupSearch = false;
           this.askProgress = "正在收集同事回答…";
           await this.openAskSession(sid);
+          this.askPendingText = "";
+          this.askPendingPhase = "";
           this.startAskPoll(r.qid, r.turn_id);
         } else if (this.askAutoSummary) {
-          this.askInput = "";
+          this.askPendingPhase = "正在生成回答…";
+          this.askProgress = "正在生成回答…";
           this.askStream = { active: true, text: "", citations: [] };
           this.scrollChat();
           await this.streamSSE("/api/ask-sessions/" + sid + "/followup/stream", { text, summarize: true }, (ev, data) => {
             if (ev === "start") {
               if (data.user_turn) this.askTurns = [...this.askTurns, data.user_turn];
+              this.askPendingText = "";
+              this.askPendingPhase = "";
               this.askStream.citations = data.citations || [];
             } else if (ev === "delta") {
               this.askStream.text += data.text || "";
               this.scrollChat();
             } else if (ev === "done") {
               this.askTurns = data.turns || this.askTurns;
+              this.askPendingText = "";
+              this.askPendingPhase = "";
               this.askStream = null;
               this.scrollChat();
               this.loadAskSessions();
             } else if (ev === "error") {
+              this.askPendingText = "";
+              this.askPendingPhase = "";
               this.askStream = null;
               this.showToast(data.error || "追问失败", "error");
             }
@@ -547,7 +562,8 @@ createApp({
             body: JSON.stringify({ text, summarize: false }),
           });
           this.askTurns = r.turns || [];
-          this.askInput = "";
+          this.askPendingText = "";
+          this.askPendingPhase = "";
           this.scrollChat();
           await this.loadAskSessions();
           this.askSending = false;
@@ -556,6 +572,9 @@ createApp({
       } catch (e) {
         this.askError = String(e.message || e);
         this.showToast("提问失败：" + this.askError, "error");
+        this.askPendingText = "";
+        this.askPendingPhase = "";
+        if (!this.askInput) this.askInput = text;
         this.askSending = false;
       }
     },
