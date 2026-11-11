@@ -129,7 +129,7 @@ python tests/make_fixtures.py
 python -m unittest discover -s tests -p "test_*.py"
 ```
 
-当前：**350 项测试通过**（Windows）。评测脚本：
+当前：**351 项测试通过**（Windows）。评测脚本：
 
 ```bash
 python tests/eval_retrieval.py --db ~/.chiselwall/chiselwall.db
@@ -292,7 +292,7 @@ python tests/make_fixtures.py
 python -m unittest discover -s tests -p "test_*.py"
 ```
 
-Currently **350 tests pass** on Windows. Evaluation:
+Currently **351 tests pass** on Windows. Evaluation:
 
 ```bash
 python tests/eval_retrieval.py --db ~/.chiselwall/chiselwall.db

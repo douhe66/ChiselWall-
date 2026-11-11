@@ -68,6 +68,20 @@ class ResearchTest(unittest.TestCase):
         self.assertEqual(kernel.fetches[0][0], "e1")
         self.assertTrue(session.get("e1").fetched)
 
+    def test_empty_session_searches_first(self):
+        session = EvidenceSession("香港 IP", ["全员组"])
+        cfg = AIConfig(enabled=True, base_url="http://x", model="m")
+        kernel = FakeKernel()
+        agent = ResearchAgent(kernel, cfg)
+        replies = [
+            {"text": '{"action":"search","query":"香港 IP"}'},
+            {"text": '{"action":"answer","text":"见资料","citations":["e1"]}'},
+        ]
+        with mock.patch("retrieval.research.LLMClient.chat", side_effect=replies):
+            result = asyncio.run(agent.run(session))
+        self.assertEqual(result["status"], "ready")
+        self.assertIn("香港 IP", kernel.searches)
+
     def test_search_then_answer(self):
         session = EvidenceSession("香港 IP", ["全员组"])
         session.add_hits([hit(1)])

@@ -70,7 +70,6 @@ createApp({
       askProgress: "",
       askResultsWidth: parseInt(localStorage.getItem("chisel_ask_results_w") || "340", 10) || 340,
       askSummarizing: false,
-      askResearching: false,
       askStream: null,
       askAutoSummary: localStorage.getItem("chisel_ask_auto_summary") !== "0",
       askGroupsOpen: false,
@@ -386,31 +385,38 @@ createApp({
       const p = this.askLatestPayload();
       return p ? (p.aggregated || []) : [];
     },
-    async researchAskSession() {
-      if (!this.askSession || this.askResearching) return;
+    askHasQuestion() {
+      return (this.askTurns || []).some((t) => t.role === "user");
+    },
+    async summarizeAskSession() {
+      if (!this.askSession || this.askSummarizing) return;
       if (!this.ai || !this.ai.ready) {
-        this.showToast("深度研究需要先配置 AI", "error");
+        this.showToast("AI 综合需要先配置 AI", "error");
         return;
       }
-      if (!this.askLatestHits().length) {
-        this.showToast("本轮还没有搜索结果，先提问收集结果", "error");
+      if (!this.askHasQuestion()) {
+        this.showToast("先提一个问题，AI 会自动检索资料", "error");
         return;
       }
-      this.askResearching = true;
-      this.askProgress = "深度研究中：读取资料 / 改写检索…";
+      this.askSummarizing = true;
+      this.askProgress = "AI 综合中：检索、读取资料…";
       try {
         const r = await this.api("/api/ask-sessions/" + this.askSession.id + "/research", { method: "POST" });
         this.askTurns = r.turns || this.askTurns;
         await this.loadAskSessions();
-        this.showToast("深度研究完成", "info");
-      } catch (e) {
-        this.showToast("深度研究失败：" + (e.message || e), "error");
-      } finally {
-        this.askResearching = false;
         this.askProgress = "";
+        this.askSummarizing = false;
+        this.showToast("AI 综合完成", "info");
+        return;
+      } catch (e) {
+        this.askSummarizing = false;
+        this.askProgress = "自主检索不可用，回退到片段综合…";
+        this.showToast("自主检索失败，回退到普通 AI 综合", "info");
+        await this.summarizeAskSessionLegacy();
+        return;
       }
     },
-    async summarizeAskSession() {
+    async summarizeAskSessionLegacy() {
       if (!this.askSession || this.askSummarizing) return;
       if (!this.askLatestHits().length) {
         this.showToast("本轮还没有搜索结果，先提问收集结果", "error");
@@ -441,6 +447,7 @@ createApp({
         this.showToast("AI 综合失败：" + (e.message || e), "error");
       } finally {
         this.askSummarizing = false;
+        this.askProgress = "";
         if (this.askStream) this.askStream = null;
       }
     },
