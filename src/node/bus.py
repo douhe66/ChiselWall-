@@ -447,7 +447,7 @@ class NodeBus:
         return await self.client.create_group(name, description)
 
     # ---- 提问 ----
-    async def ask(self, text: str, groups: Optional[list[str]] = None) -> dict:
+    async def ask(self, text: str, groups: Optional[list[str]] = None, *, use_plan: bool = True, research_id: str = "") -> dict:
         if not self.cfg.enabled:
             raise ValueError("未配置 relay（relay_url/nick/token），无法使用随手问")
         if not self.connected:
@@ -459,7 +459,7 @@ class NodeBus:
         refined = text
         plan = None
         plan_dict = None
-        if self.plan_fn is not None:
+        if use_plan and self.plan_fn is not None:
             # 发送前生成结构化计划；未启用/未配置/失败都回退原问题，不调用旧改写。
             try:
                 plan = await asyncio.to_thread(self.plan_fn, text)
@@ -467,7 +467,7 @@ class NodeBus:
                 log.exception("检索计划生成失败，回退原问题")
                 plan = None
             plan_dict = plan.to_dict() if hasattr(plan, "to_dict") else None
-        elif self.rewrite_fn is not None:
+        elif use_plan and self.rewrite_fn is not None:
             # 兼容旧调用/测试：仅在未提供 plan_fn 时保留旧的单查询改写。
             try:
                 probe = await asyncio.to_thread(self.searcher.search, text, 5)
@@ -481,7 +481,7 @@ class NodeBus:
                     variants = []
             if variants:
                 refined = self._pick_broadcast_query(text, [str(v).strip() for v in variants if str(v).strip()])
-        send_text = original if self.plan_fn is not None else refined
+        send_text = original if (use_plan and self.plan_fn is not None) else refined
         item = self.asks.create(original, gs, search_text=send_text, plan=plan_dict)
         # 本机检索与远端使用同一份计划；没有计划则原问题普通检索。
         local_started = time.monotonic()
@@ -505,8 +505,7 @@ class NodeBus:
                 "local": True,
             },
         )
-        ok = await self.client.send(
-            {
+        query_payload = {
                 "type": "query",
                 "qid": item.qid,
                 "text": send_text,
@@ -515,7 +514,9 @@ class NodeBus:
                 "groups": gs,
                 "deadline_ms": self.cfg.ask_deadline_ms,
             }
-        )
+        if research_id:
+            query_payload["research_id"] = research_id
+        ok = await self.client.send(query_payload)
         if not ok:
             raise ValueError("relay 发送失败（连接已断开）")
         return {"qid": item.qid, "groups": gs, "deadline_ms": self.cfg.ask_deadline_ms, "plan": plan_dict}

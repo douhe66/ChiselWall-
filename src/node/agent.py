@@ -168,6 +168,9 @@ class NodeAgent:
             plan_fn=lambda q: self.rewriter.plan(q),
             local_searcher=self.searcher,
         )
+        from retrieval.kernel import RetrievalKernel
+
+        self.retrieval = RetrievalKernel(self)
         self._load_state()
 
     # ---- 状态加载 ----
@@ -748,6 +751,61 @@ class NodeAgent:
         if session.get("title") == "新会话":
             self.ask_sessions.rename(sid, question[:20])
         return {"ok": True, "session_id": sid, "qid": qid, "turn_id": turn["id"], "session": self.ask_sessions.get(sid)}
+
+    async def research_answer(self, sid: str) -> dict:
+        """可选的 AI ResearchAgent：自主 fetch / 换词再搜 / 回答。"""
+        from retrieval.research import ResearchAgent
+        from retrieval.session import EvidenceSession
+
+        session = self.ask_sessions.get(sid)
+        if session is None:
+            return {"ok": False, "error": "会话不存在"}
+        if not self.ai_config.ready:
+            return {"ok": False, "error": "AI 未配置"}
+        turns = self.ask_sessions.turns(sid)
+        target = None
+        for turn in reversed(turns):
+            if turn.get("role") == "user":
+                target = turn
+                break
+        if target is None:
+            return {"ok": False, "error": "本会话还没有问题"}
+        payload = target.get("payload") or {}
+        research = EvidenceSession(str(target.get("content") or ""), payload.get("groups") or [])
+        research.add_hits(payload.get("aggregated") or [], node_fallback=self.config.relay_nick or "我")
+        started = time.monotonic()
+        agent = ResearchAgent(self.retrieval, self.ai_config)
+        result = await agent.run(research)
+        if result.get("status") != "ready" or not result.get("answer"):
+            return {"ok": False, "error": result.get("error") or "研究未完成", "research": result}
+        citations = []
+        for eid in result.get("citations") or []:
+            ev = research.get(eid)
+            if ev is None:
+                continue
+            citations.append({
+                "index": len(citations) + 1,
+                "evidence_id": eid,
+                "title": ev.title,
+                "nodes": [ev.node],
+                "rel_path": ev.rel_path,
+                "format": ev.format,
+                "sources": ev.sources,
+            })
+        answer = result["answer"]
+        self.ask_sessions.append(sid, "assistant", answer, {
+            "citations": citations,
+            "status": "ready",
+            "elapsed_ms": int((time.monotonic() - started) * 1000),
+            "model": self.ai_config.model,
+            "context_chars": result.get("context_chars") or 0,
+            "research_trace": result.get("trace") or [],
+            "research": True,
+        })
+        log.info("research answer sid=%s citations=%s trace_steps=%s",
+                 sid, len(citations), len(result.get("trace") or []))
+        return {"ok": True, "answer": result, "citations": citations,
+                "session": self.ask_sessions.get(sid), "turns": self.ask_sessions.turns(sid)}
 
     async def resolve_ai_evidence(self, sid: str) -> dict:
         """AI 综合前按现有排名取远端全文；只用 max_context_chars 一个预算。"""

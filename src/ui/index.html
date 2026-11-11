@@ -352,7 +352,8 @@
           <div class="chat-toolbar">
             <strong>{{ askSession.title }}</strong>
             <span class="muted small">先看右侧搜索结果，再点「AI 综合」生成回答</span>
-            <button class="btn primary small" @click="summarizeAskSession" :disabled="askSummarizing || askSending || !askLatestHits().length">{{ askSummarizing ? 'AI 综合中…' : 'AI 综合' }}</button>
+            <button class="btn primary small" @click="summarizeAskSession" :disabled="askSummarizing || askResearching || askSending || !askLatestHits().length">{{ askSummarizing ? 'AI 综合中…' : 'AI 综合' }}</button>
+            <button class="btn small" @click="researchAskSession" :disabled="askResearching || askSummarizing || askSending || !ai.ready || !askLatestHits().length">{{ askResearching ? '研究中…' : '深度研究' }}</button>
           </div>
           <div class="chat-messages">
             <div v-if="!askTurns.length" class="muted small">这个会话还没有提问。</div>
@@ -381,6 +382,12 @@
               <div v-if="t.role === 'assistant' && t.payload" class="ask-turn-meta">
                 <span v-if="t.payload.elapsed_ms" class="muted small">AI 用时 {{ t.payload.elapsed_ms }}ms · {{ t.payload.model }}<template v-if="t.payload.context_chars"> · 上下文 {{ t.payload.context_chars }} 字</template></span>
                 <span v-if="t.payload.weak_only" class="badge route-fallback">仅弱相关结果</span>
+                <details v-if="(t.payload.research_trace || []).length" class="research-trace">
+                  <summary class="muted small">研究过程 · {{ t.payload.research_trace.length }} 步</summary>
+                  <div v-for="st in t.payload.research_trace" :key="st.step" class="research-step">
+                    {{ st.step }}. {{ st.action }}<span v-if="st.reason">：{{ st.reason }}</span>
+                  </div>
+                </details>
               </div>
               <div v-if="t.role === 'assistant' && t.payload && (t.payload.citations || []).length" class="chat-citations" style="padding:6px 0 0">
                 <span class="muted small">引用（本轮）：</span>
@@ -442,7 +449,8 @@
         <div class="ask-results-head">
           <strong>搜索结果</strong>
           <span class="badge">{{ askLatestHits().length }} 处</span>
-          <button class="btn small" @click="summarizeAskSession" :disabled="askSummarizing || askSending || !askLatestHits().length">{{ askSummarizing ? 'AI 综合中…' : 'AI 综合' }}</button>
+          <button class="btn small" @click="summarizeAskSession" :disabled="askSummarizing || askResearching || askSending || !askLatestHits().length">{{ askSummarizing ? 'AI 综合中…' : 'AI 综合' }}</button>
+          <button class="btn small" @click="researchAskSession" :disabled="askResearching || askSummarizing || askSending || !ai.ready || !askLatestHits().length">{{ askResearching ? '研究中…' : '深度研究' }}</button>
         </div>
         <div v-if="askLatestPayload()" class="ask-results-meta">
           <span v-if="askLatestPayload().elapsed_ms !== undefined" class="badge">等待 {{ formatElapsed(askLatestPayload().elapsed_ms) }}</span>

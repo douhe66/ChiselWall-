@@ -94,6 +94,7 @@ class RelayHub:
         self.heartbeat_timeout = heartbeat_timeout
         self.clients: dict[str, Client] = {}
         self.buckets: dict[str, TokenBucket] = {}
+        self.research_buckets: dict[tuple[str, str], TokenBucket] = {}
         self.group_store = group_store
         self.group_meta: dict[str, dict] = {}
         if group_store is not None:
@@ -212,7 +213,15 @@ class RelayHub:
                 out.append(c)
         return out
 
-    def allow_query(self, user: str) -> bool:
+    def allow_query(self, user: str, research_id: str = "") -> bool:
+        # 研究会话的多个 subquery 共享一个独立桶：普通提问仍按原限流，
+        # 研究允许连续几轮，但不会无限放大。
+        if research_id:
+            key = (user, research_id)
+            bucket = self.research_buckets.setdefault(
+                key, TokenBucket(self.rate, max(4, self.burst + 2))
+            )
+            return bucket.allow()
         bucket = self.buckets.setdefault(user, TokenBucket(self.rate, self.burst))
         return bucket.allow()
 
@@ -343,8 +352,9 @@ def create_app(
                         await hub.broadcast_online()
                     continue
                 if typ == "query":
-                    if not hub.allow_query(user):
-                        log.warning("relay rate limited user=%s qid=%s", user, msg.get("qid"))
+                    research_id = str(msg.get("research_id") or "")
+                    if not hub.allow_query(user, research_id):
+                        log.warning("relay rate limited user=%s qid=%s research=%s", user, msg.get("qid"), research_id or "-")
                         await send({"type": "error", "code": "rate_limited", "qid": msg.get("qid")})
                         continue
                     qid = str(msg.get("qid") or "")

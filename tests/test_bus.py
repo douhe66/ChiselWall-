@@ -96,6 +96,13 @@ class RelayHubTest(unittest.TestCase):
         self.assertTrue(self.hub.allow_query("alice"))
         self.assertFalse(self.hub.allow_query("alice"))  # burst=2 用完
 
+    def test_research_session_has_own_burst(self) -> None:
+        for _ in range(4):
+            self.assertTrue(self.hub.allow_query("alice", "research-1"))
+        self.assertFalse(self.hub.allow_query("alice", "research-1"))
+        # research 桶不消耗普通提问桶
+        self.assertTrue(self.hub.allow_query("alice"))
+
     def test_unregister_respects_replacement(self) -> None:
         self._register("alice", ["全员组"])
 

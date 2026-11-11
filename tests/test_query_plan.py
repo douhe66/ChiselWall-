@@ -98,6 +98,13 @@ class BusPlanTest(unittest.TestCase):
         self.assertEqual(sent[0]["text"], "Linux 文件锁")
         self.assertEqual(sent[0]["plan"]["expression"], "(文件锁) AND (Linux)")
 
+    def test_research_search_bypasses_second_plan(self):
+        plan = QueryPlan("原始问题", [["扩展"]], [])
+        bus, sent = self._bus(lambda q: plan)
+        asyncio.run(bus.ask("原始问题", ["全员组"], use_plan=False))
+        self.assertEqual(sent[0]["text"], "原始问题")
+        self.assertIsNone(sent[0]["plan"])
+
     def test_none_falls_back_original(self):
         bus, sent = self._bus(lambda q: None)
         asyncio.run(bus.ask("原始问题", ["全员组"]))

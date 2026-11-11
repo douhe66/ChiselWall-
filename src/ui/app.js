@@ -70,6 +70,7 @@ createApp({
       askProgress: "",
       askResultsWidth: parseInt(localStorage.getItem("chisel_ask_results_w") || "340", 10) || 340,
       askSummarizing: false,
+      askResearching: false,
       askStream: null,
       askAutoSummary: localStorage.getItem("chisel_ask_auto_summary") !== "0",
       askGroupsOpen: false,
@@ -384,6 +385,30 @@ createApp({
     askLatestHits() {
       const p = this.askLatestPayload();
       return p ? (p.aggregated || []) : [];
+    },
+    async researchAskSession() {
+      if (!this.askSession || this.askResearching) return;
+      if (!this.ai || !this.ai.ready) {
+        this.showToast("深度研究需要先配置 AI", "error");
+        return;
+      }
+      if (!this.askLatestHits().length) {
+        this.showToast("本轮还没有搜索结果，先提问收集结果", "error");
+        return;
+      }
+      this.askResearching = true;
+      this.askProgress = "深度研究中：读取资料 / 改写检索…";
+      try {
+        const r = await this.api("/api/ask-sessions/" + this.askSession.id + "/research", { method: "POST" });
+        this.askTurns = r.turns || this.askTurns;
+        await this.loadAskSessions();
+        this.showToast("深度研究完成", "info");
+      } catch (e) {
+        this.showToast("深度研究失败：" + (e.message || e), "error");
+      } finally {
+        this.askResearching = false;
+        this.askProgress = "";
+      }
     },
     async summarizeAskSession() {
       if (!this.askSession || this.askSummarizing) return;
