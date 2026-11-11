@@ -20,6 +20,7 @@ class SensitivityService:
 
     # ---- 规则 ----
     def _sync_builtin_rules(self) -> None:
+        log.info("sensitivity sync builtin rules count=%s", len(BUILTIN_RULES))
         for spec in BUILTIN_RULES:
             self.db.upsert_builtin_sensitivity_rule(
                 spec.rule_id, spec.label, spec.category, spec.severity,
@@ -31,16 +32,19 @@ class SensitivityService:
 
     def add_custom_rule(self, label: str, pattern: str, category: str = "", severity: str = "medium") -> dict:
         rule = self.db.add_custom_sensitivity_rule(label, pattern, category, severity)
+        log.info("sensitivity custom rule added id=%s label=%s severity=%s", rule.get("rule_id"), label, severity)
         self.rescan_async()
         return rule
 
     def set_rule_enabled(self, rule_id: str, enabled: bool) -> dict:
         rule = self.db.set_sensitivity_rule_enabled(rule_id, enabled)
+        log.info("sensitivity rule %s id=%s", "enabled" if enabled else "blocked", rule_id)
         self.rescan_async()
         return rule
 
     def delete_custom_rule(self, rule_id: str) -> None:
         self.db.delete_custom_sensitivity_rule(rule_id)
+        log.info("sensitivity custom rule deleted id=%s", rule_id)
         self.rescan_async()
 
     # ---- 扫描 ----
@@ -70,6 +74,7 @@ class SensitivityService:
             return 0
         try:
             docs = self.db.list_docs(status="indexed", limit=None)
+            log.info("sensitivity scan all started docs=%s", len(docs))
             n = 0
             for doc in docs:
                 try:
@@ -77,6 +82,7 @@ class SensitivityService:
                     n += 1
                 except Exception:
                     log.exception("敏感词扫描失败 doc_id=%s", doc.get("doc_id"))
+            log.info("sensitivity scan all finished scanned=%s", n)
             return n
         finally:
             self._scan_lock.release()
@@ -262,6 +268,7 @@ class SensitivityService:
         if self.db.get_mount(int(mount_id)) is None:
             raise LookupError("挂载不存在")
         self.db.set_mount_sensitivity_ignored(int(mount_id), ignored)
+        log.info("sensitivity mount ignore=%s id=%s", ignored, mount_id)
         if not ignored:
             self.rescan_async()  # 忽略期间可能新增/修改过文档，恢复时补扫
         return self.summary()
@@ -270,6 +277,7 @@ class SensitivityService:
         if self.db.get_group(int(group_id)) is None:
             raise LookupError("分组不存在")
         self.db.set_group_sensitivity_ignored(int(group_id), ignored)
+        log.info("sensitivity group ignore=%s id=%s", ignored, group_id)
         if not ignored:
             self.rescan_async()
         return self.summary()

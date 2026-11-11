@@ -282,6 +282,8 @@ def create_app(
     async def ws_endpoint(ws: WebSocket) -> None:
         hub: RelayHub = app.state.hub
         await ws.accept()
+        client_host = f"{ws.client.host}:{ws.client.port}" if ws.client else "unknown"
+        log.info("relay ws connected client=%s", client_host)
         user: Optional[str] = None
 
         async def send(payload: dict) -> None:
@@ -305,6 +307,7 @@ def create_app(
                     nick = str(msg.get("user") or "")
                     token = str(msg.get("token") or "")
                     if not hub.auth(nick, token):
+                        log.warning("relay auth failed nick=%s client=%s", nick or "(empty)", client_host)
                         await send({"type": "error", "code": "auth_failed"})
                         await ws.close()
                         return
@@ -313,6 +316,7 @@ def create_app(
                     if prev is not None and prev.send is not send:
                         log.info("relay: user %s reconnected, replacing old connection", nick)
                     hello = hub.register(nick, list(msg.get("groups") or []), send)
+                    log.info("relay hello user=%s groups=%s online=%s", nick, hello.get("groups"), len(hub.clients))
                     await send(hello)
                     await hub.broadcast_online()
                     continue
@@ -334,11 +338,13 @@ def create_app(
                         await send({"type": "error", "code": "group_create_failed",
                                     "message": result.get("error") or ""})
                     else:
+                        log.info("relay group created name=%s by=%s", result.get("name"), user)
                         await send({"type": "group_ok", "name": result.get("name")})
                         await hub.broadcast_online()
                     continue
                 if typ == "query":
                     if not hub.allow_query(user):
+                        log.warning("relay rate limited user=%s qid=%s", user, msg.get("qid"))
                         await send({"type": "error", "code": "rate_limited", "qid": msg.get("qid")})
                         continue
                     qid = str(msg.get("qid") or "")
@@ -356,6 +362,7 @@ def create_app(
                     }
                     for c in targets:
                         await hub.deliver(c, forward)
+                    log.info("relay query qid=%s asker=%s groups=%s targets=%s", qid, user, groups, len(targets))
                     await send({"type": "query_ack", "qid": qid, "targets": len(targets)})
                     continue
                 if typ == "answer":
@@ -398,6 +405,7 @@ def create_app(
         finally:
             if user is not None:
                 hub.unregister(user, send)
+                log.info("relay disconnected user=%s client=%s online=%s", user, client_host, len(hub.clients))
                 try:
                     await hub.broadcast_online()
                 except Exception:
@@ -426,6 +434,7 @@ def main(argv: Optional[list[str]] = None) -> None:
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=18760)
     parser.add_argument("--log-level", default="INFO")
+    parser.add_argument("--log-file", default="", help="日志文件（默认 config 同目录/logs/relay.log）")
     parser.add_argument("--init", action="store_true", help="生成样例 relay.json（不存在时）并退出")
     args = parser.parse_args(argv)
 
@@ -440,8 +449,12 @@ def main(argv: Optional[list[str]] = None) -> None:
         print("  chiselwall-relay.exe admin invite 张三 --group 全员组 --url ws://<本机IP>:18760/ws --config %s" % path)
         return
 
-    logging.basicConfig(level=getattr(logging, args.log_level.upper(), logging.INFO))
-    cfg_path = Path(args.config)
+    cfg_path = Path(args.config).expanduser()
+    log_file = Path(args.log_file).expanduser() if args.log_file else cfg_path.parent / "logs" / "relay.log"
+    from logging_setup import setup_logging
+
+    active_log = setup_logging(log_file, args.log_level)
+    log.info("relay starting config=%s log=%s host=%s port=%s", cfg_path, active_log or "console", args.host, args.port)
     cfg = load_config(cfg_path)
     groups_path = cfg_path.with_name(cfg_path.stem + "-groups.json")
     app = create_app(
@@ -451,9 +464,16 @@ def main(argv: Optional[list[str]] = None) -> None:
         groups_path=groups_path,
         users_path=cfg_path,
     )
+    log.info("relay ready users=%s groups_file=%s", len(cfg["users"]), groups_path)
     import uvicorn
 
-    uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level.lower())
+    try:
+        uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level.lower(), log_config=None)
+    except Exception:
+        log.exception("relay 异常退出")
+        raise
+    finally:
+        log.info("relay stopped")
 
 
 if __name__ == "__main__":

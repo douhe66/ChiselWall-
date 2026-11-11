@@ -256,18 +256,21 @@ class NodeAgent:
         if mount is None:
             raise ValueError("挂载创建失败")
         self._attach_mount(mount)
+        log.info("mount added id=%s kind=%s path=%s", mount_id, kind, p)
         return {"mount_id": mount_id, "kind": kind, "path": str(p)}
 
     def remove_mount(self, mount_id: int) -> None:
         self.service.remove_mount(mount_id)
         self._connectors.pop(mount_id, None)
         self.db.remove_mount(mount_id)
+        log.info("mount removed id=%s", mount_id)
 
     def set_mount_enabled(self, mount_id: int, enabled: bool) -> dict:
         mount = self.db.get_mount(mount_id)
         if mount is None:
             raise LookupError("挂载不存在")
         self.db.set_mount_enabled(mount_id, enabled)
+        log.info("mount %s id=%s", "enabled" if enabled else "paused", mount_id)
         if enabled:
             if mount_id not in self._connectors:
                 self._attach_mount(self.db.get_mount(mount_id))
@@ -283,6 +286,7 @@ class NodeAgent:
         if doc is None:
             raise LookupError("文档不存在")
         self.db.set_doc_share(doc_id, state)
+        log.info("doc share changed doc_id=%s state=%s", doc_id, state)
         return {"ok": True, "doc": {"doc_id": doc.doc_id, "share_state": state}}
 
     # ---- 排除规则 ----
@@ -326,6 +330,7 @@ class NodeAgent:
                 self.db.clear_chunks(int(doc["doc_id"]))
 
     def reindex_all(self) -> None:
+        log.info("reindex all requested mounts=%s", len(self._connectors))
         for mount_id, conn in self._connectors.items():
             self.service.enqueue_scan(mount_id, conn)
 
@@ -335,6 +340,7 @@ class NodeAgent:
         if not name:
             raise ValueError("组名不能为空")
         group_id = self.db.add_group(name)
+        log.info("group added id=%s name=%s", group_id, name)
         return {"group_id": group_id, "name": name}
 
     def remove_group(self, group_id: int) -> None:
@@ -349,6 +355,7 @@ class NodeAgent:
         if self.db.get_mount(mount_id) is None:
             raise LookupError("挂载不存在")
         member_id = self.db.add_group_member(group_id, mount_id, rel_path)
+        log.info("group member added group=%s mount=%s rel=%s", group_id, mount_id, rel_path)
         return {"member_id": member_id, "group_id": group_id, "mount_id": mount_id, "rel_path": rel_path}
 
     def remove_group_member(self, member_id: int) -> None:
@@ -1527,15 +1534,20 @@ def main(argv: Optional[list[str]] = None) -> None:
     parser.add_argument("--ai-key", default="", help="模型 API key（也可在设置页填写）")
     parser.add_argument("--ai-model", default="", help="模型名（如 deepseek-chat）")
     parser.add_argument("--no-browser", action="store_true", help="不自动打开浏览器（默认启动后打开）")
+    parser.add_argument("--log-level", default="INFO", help="日志级别（DEBUG/INFO/WARNING/ERROR）")
+    parser.add_argument("--log-file", default="", help="日志文件（默认 config-dir/logs/node.log）")
     args = parser.parse_args(argv)
 
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s"
-    )
+    config_dir = Path(args.config_dir).expanduser()
+    log_file = Path(args.log_file).expanduser() if args.log_file else config_dir / "logs" / "node.log"
+    from logging_setup import setup_logging
+
+    active_log = setup_logging(log_file, args.log_level)
+    log.info("node starting db=%s config_dir=%s host=%s port=%s log=%s", args.db, config_dir, args.host, args.port, active_log or "console")
     relay_url = args.relay_url.strip()
     config = Config(
         db_path=Path(args.db).expanduser(),
-        config_dir=Path(args.config_dir).expanduser(),
+        config_dir=config_dir,
         debounce=args.debounce,
         cpu_threshold=args.cpu_threshold,
         trigram_enabled=args.trigram,
@@ -1552,7 +1564,7 @@ def main(argv: Optional[list[str]] = None) -> None:
         ai_model=args.ai_model.strip(),
     )
     agent = NodeAgent(config)
-    from api.server import create_app, load_or_create_token
+    from api.server import APP_VERSION, create_app, load_or_create_token
 
     token = load_or_create_token(config.config_dir)
     app = create_app(agent, token)
@@ -1560,6 +1572,7 @@ def main(argv: Optional[list[str]] = None) -> None:
     url = "http://%s:%s" % (args.host, args.port)
     print("凿壁 ChiselWall 本地节点: %s" % url)
     print("API token（请求头 X-Chisel-Token，首次使用请在 UI 弹窗中输入）:", token)
+    log.info("node ready url=%s version=%s", url, APP_VERSION)
 
     if not args.no_browser:
         import threading
@@ -1575,7 +1588,13 @@ def main(argv: Optional[list[str]] = None) -> None:
 
     import uvicorn
 
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    try:
+        uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level.lower(), log_config=None)
+    except Exception:
+        log.exception("node 异常退出")
+        raise
+    finally:
+        log.info("node stopped")
 
 
 if __name__ == "__main__":

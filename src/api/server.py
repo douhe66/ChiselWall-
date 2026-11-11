@@ -14,7 +14,9 @@ token：首启随机生成（secrets.token_urlsafe(24)），持久化在 ~/.chis
 from __future__ import annotations
 
 import json
+import logging
 import secrets
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -59,7 +61,8 @@ def _sse_response(events):
 #   - 页脚版本展示
 #   - /api/health 的 version 字段
 # 任何 UI 改动必须 bump 此值，否则用户浏览器仍可能命中旧缓存。
-APP_VERSION = "0.9.22"
+APP_VERSION = "0.9.23"
+log = logging.getLogger("chiselwall.api")
 
 # 健康检查路径：公开（不含知识内容）
 PUBLIC_PATHS = {"/api/health", "/"}
@@ -243,20 +246,20 @@ def create_app(agent, token: str = "") -> FastAPI:
 
     @app.on_event("startup")
     async def _startup() -> None:
+        log.info("API starting version=%s auth=%s", APP_VERSION, "enabled" if token else "disabled")
         # M4：在事件循环内启动 relay 长连接（未配置时无操作）
         try:
             await agent.start_bus()
         except Exception:
-            import logging
-
-            logging.getLogger("chiselwall.api").exception("relay bus 启动失败（本地功能不受影响）")
+            log.exception("relay bus 启动失败（本地功能不受影响）")
 
     @app.on_event("shutdown")
     async def _shutdown() -> None:
+        log.info("API stopping")
         try:
             await agent.stop_bus()
         except Exception:
-            pass
+            log.exception("relay bus 停止失败")
 
     def require_token(x_chisel_token: Optional[str] = Header(default=None)) -> None:
         if token and x_chisel_token != token:
@@ -909,6 +912,19 @@ def create_app(agent, token: str = "") -> FastAPI:
         response = await call_next(request)
         if not request.url.path.startswith("/api"):
             response.headers["Cache-Control"] = "no-cache"
+        return response
+
+    @app.middleware("http")
+    async def _log_slow_or_failed(request: Request, call_next):
+        started = time.perf_counter()
+        try:
+            response = await call_next(request)
+        except Exception:
+            log.exception("API failed %s %s", request.method, request.url.path)
+            raise
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        if response.status_code >= 500 or elapsed_ms >= 1500:
+            log.warning("API %s %s -> %s %.0fms", request.method, request.url.path, response.status_code, elapsed_ms)
         return response
 
     # ---- 首页（版本注入 + 缓存破坏，M2-FIX5） ----

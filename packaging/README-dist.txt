@@ -26,6 +26,18 @@
 - 只有已加入的提问组会出现在提问面板；设置 → 提问组可查看成员。
 - 右侧结果栏可拖动调宽；结果/回答各自滚动。
 
+二·六、日志与后台守护（v0.9.23）
+- 日志默认写入：%USERPROFILE%\.chiselwall\logs\node.log；relay 写到 relay.json 同目录 logs\relay.log；
+  单文件 10MB，保留 5 个备份，同时输出到控制台。
+- Windows relay 后台守护（管理员 PowerShell，在发行包根目录）：
+    powershell -ExecutionPolicy Bypass -File .\install-relay-task.ps1
+  计划任务名 ChiselWall Relay，开机启动，异常退出 5 秒后重启；卸载加 -Uninstall。
+  也可以用 NSSM 注册为 Windows 服务，详见 README-windows-service.md。
+- Linux relay 守护（systemd）：
+    cd systemd
+    sudo ./install-relay-service.sh /opt/chiselwall /var/lib/chiselwall/relay.json
+  日志：journalctl -u chiselwall-relay -f 或 /var/log/chiselwall/relay.log。
+
 三、语义搜索（可选，默认关）
 - 包内已带向量模型（bge-small-zh，约 23MB）与运行库，设置 → 语义搜索 → 勾选启用 → 保存 → 重建向量索引；
 - 开启后空闲内存约 200MB，索引期有少量 CPU 占用；关闭即回退关键词检索；

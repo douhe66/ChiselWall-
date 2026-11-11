@@ -314,6 +314,7 @@ class RelayClient:
                     self.connected = True
                     self.last_error = ""
                     backoff = 1.0
+                    log.info("relay connected url=%s nick=%s groups=%s", self.cfg.relay_url, self.cfg.nick, self.cfg.groups)
                     hb = asyncio.create_task(self._heartbeat(ws))
                     try:
                         while not self._stop.is_set():
@@ -338,6 +339,8 @@ class RelayClient:
                 self.last_error = str(exc) or exc.__class__.__name__
                 log.warning("relay 连接失败：%s（%.0fs 后重连）", exc, backoff)
             finally:
+                if self.connected:
+                    log.info("relay disconnected url=%s nick=%s", self.cfg.relay_url, self.cfg.nick)
                 self.connected = False
                 self._ws = None
             if self._stop.is_set():
