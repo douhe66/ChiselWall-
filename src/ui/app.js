@@ -64,6 +64,7 @@ createApp({
       askTimer: null,
       askSessions: [],
       askSession: null,
+      askOpenSeq: 0,
       askTurns: [],
       askInput: "",
       askSending: false,
@@ -388,8 +389,9 @@ createApp({
     askHasQuestion() {
       return (this.askTurns || []).some((t) => t.role === "user");
     },
-    async summarizeAskSession() {
-      if (!this.askSession || this.askSummarizing) return;
+    async summarizeAskSession(sidArg = null) {
+      const sid = sidArg || (this.askSession && this.askSession.id);
+      if (!sid || !this.isCurrentSession(sid) || this.askSummarizing) return;
       if (!this.ai || !this.ai.ready) {
         this.showToast("AI 综合需要先配置 AI", "error");
         return;
@@ -401,7 +403,8 @@ createApp({
       this.askSummarizing = true;
       this.askProgress = "AI 综合中：检索、读取资料…";
       try {
-        const r = await this.api("/api/ask-sessions/" + this.askSession.id + "/research", { method: "POST" });
+        const r = await this.api("/api/ask-sessions/" + sid + "/research", { method: "POST" });
+        if (!this.isCurrentSession(sid)) { this.askSummarizing = false; return; }
         this.askTurns = r.turns || this.askTurns;
         await this.loadAskSessions();
         this.askProgress = "";
@@ -410,14 +413,16 @@ createApp({
         return;
       } catch (e) {
         this.askSummarizing = false;
+        if (!this.isCurrentSession(sid)) return;
         this.askProgress = "自主检索不可用，回退到片段综合…";
         this.showToast("自主检索失败，回退到普通 AI 综合", "info");
-        await this.summarizeAskSessionLegacy();
+        await this.summarizeAskSessionLegacy(sid);
         return;
       }
     },
-    async summarizeAskSessionLegacy() {
-      if (!this.askSession || this.askSummarizing) return;
+    async summarizeAskSessionLegacy(sidArg = null) {
+      const sid = sidArg || (this.askSession && this.askSession.id);
+      if (!sid || !this.isCurrentSession(sid) || this.askSummarizing) return;
       if (!this.askLatestHits().length) {
         this.showToast("本轮还没有搜索结果，先提问收集结果", "error");
         return;
@@ -426,7 +431,8 @@ createApp({
       this.askStream = { active: true, text: "", citations: [] };
       this.scrollChat();
       try {
-        await this.streamSSE("/api/ask-sessions/" + this.askSession.id + "/summarize/stream", null, (ev, data) => {
+        await this.streamSSE("/api/ask-sessions/" + sid + "/summarize/stream", null, (ev, data) => {
+          if (!this.isCurrentSession(sid)) return;
           if (ev === "start") {
             this.askStream.citations = data.citations || [];
           } else if (ev === "delta") {
@@ -491,15 +497,30 @@ createApp({
         if (el) el.scrollTop = el.scrollHeight;
       });
     },
+    isCurrentSession(sid) {
+      return !!(sid && this.askSession && this.askSession.id === sid);
+    },
     async openAskSession(id) {
+      const seq = ++this.askOpenSeq;
+      const switching = !this.askSession || this.askSession.id !== id;
+      if (switching) {
+        this.stopAskPoll();
+        this.askSending = false;
+        this.askSummarizing = false;
+        this.askProgress = "";
+      }
       try {
         const r = await this.api("/api/ask-sessions/" + id);
+        if (seq !== this.askOpenSeq) return;
         this.askSession = r.session;
         this.askTurns = r.turns || [];
+        this.askPendingText = "";
+        this.askPendingPhase = "";
+        this.askStream = null;
         this.askError = "";
         this.scrollChat();
       } catch (e) {
-        this.showToast("打开会话失败：" + (e.message || e), "error");
+        if (seq === this.askOpenSeq) this.showToast("打开会话失败：" + (e.message || e), "error");
       }
     },
     async renameAskSession(s) {
@@ -542,9 +563,11 @@ createApp({
       this.askProgress = "";
       try {
         if (!this.askSession) {
+          const seq = this.askOpenSeq;
           const s = await this.api("/api/ask-sessions", {
             method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: "新会话" }),
           });
+          if (seq !== this.askOpenSeq) { this.askSending = false; return; }
           this.askSession = s;
           await this.loadAskSessions();
         }
@@ -562,45 +585,25 @@ createApp({
             body: JSON.stringify({ text, groups: this.askGroupsSel }),
           });
           this.askFollowupSearch = false;
+          if (!this.isCurrentSession(sid)) { this.askSending = false; return; }
           this.askProgress = "正在收集同事回答…";
-          await this.openAskSession(sid);
-          this.askPendingText = "";
-          this.askPendingPhase = "";
-          this.startAskPoll(r.qid, r.turn_id);
+          if (this.isCurrentSession(sid)) {
+            await this.openAskSession(sid);
+            this.askPendingText = "";
+            this.askPendingPhase = "";
+          }
+          this.startAskPoll(r.qid, r.turn_id, sid);
         } else if (this.askAutoSummary) {
-          this.askPendingPhase = "正在生成回答…";
-          this.askProgress = "正在生成回答…";
-          this.askStream = { active: true, text: "", citations: [] };
-          this.scrollChat();
-          await this.streamSSE("/api/ask-sessions/" + sid + "/followup/stream", { text, summarize: true }, (ev, data) => {
-            if (ev === "start") {
-              if (data.user_turn) this.askTurns = [...this.askTurns, data.user_turn];
-              this.askPendingText = "";
-              this.askPendingPhase = "";
-              this.askStream.citations = data.citations || [];
-            } else if (ev === "delta") {
-              this.askStream.text += data.text || "";
-              this.scrollChat();
-            } else if (ev === "done") {
-              this.askTurns = data.turns || this.askTurns;
-              this.askPendingText = "";
-              this.askPendingPhase = "";
-              this.askStream = null;
-              this.scrollChat();
-              this.loadAskSessions();
-            } else if (ev === "error") {
-              this.askPendingText = "";
-              this.askPendingPhase = "";
-              this.askStream = null;
-              this.showToast(data.error || "追问失败", "error");
-            }
-          });
+          this.askPendingPhase = "正在自主检索…";
+          this.askProgress = "AI 综合中：检索、读取资料…";
+          await this.researchFollowup(sid, text);
           this.askSending = false;
         } else {
           const r = await this.api("/api/ask-sessions/" + sid + "/followup", {
             method: "POST", headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ text, summarize: false }),
           });
+          if (!this.isCurrentSession(sid)) { this.askSending = false; return; }
           this.askTurns = r.turns || [];
           this.askPendingText = "";
           this.askPendingPhase = "";
@@ -618,25 +621,82 @@ createApp({
         this.askSending = false;
       }
     },
-    startAskPoll(qid, turnId) {
+    async researchFollowup(sid, text) {
+      try {
+        const r = await this.api("/api/ask-sessions/" + sid + "/followup/research", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text, summarize: true }),
+        });
+        if (!this.isCurrentSession(sid)) return;
+        this.askTurns = r.turns || this.askTurns;
+        this.askPendingText = "";
+        this.askPendingPhase = "";
+        this.askProgress = "";
+        this.scrollChat();
+        await this.loadAskSessions();
+        this.showToast("AI 综合完成", "info");
+      } catch (e) {
+        if (!this.isCurrentSession(sid)) return;
+        this.showToast("自主检索失败，回退到普通追问", "info");
+        await this.followupStreamLegacy(sid, text);
+      }
+    },
+    async followupStreamLegacy(sid, text) {
+      if (!this.isCurrentSession(sid)) return;
+      this.askPendingPhase = "正在生成回答…";
+      this.askProgress = "正在生成回答…";
+      this.askStream = { active: true, text: "", citations: [] };
+      this.scrollChat();
+      await this.streamSSE("/api/ask-sessions/" + sid + "/followup/stream", { text, summarize: true }, (ev, data) => {
+        if (!this.isCurrentSession(sid)) return;
+        if (ev === "start") {
+          if (data.user_turn) this.askTurns = [...this.askTurns, data.user_turn];
+          this.askPendingText = "";
+          this.askPendingPhase = "";
+          this.askStream.citations = data.citations || [];
+        } else if (ev === "delta") {
+          this.askStream.text += data.text || "";
+          this.scrollChat();
+        } else if (ev === "done") {
+          this.askTurns = data.turns || this.askTurns;
+          this.askPendingText = "";
+          this.askPendingPhase = "";
+          this.askStream = null;
+          this.askProgress = "";
+          this.scrollChat();
+          this.loadAskSessions();
+        } else if (ev === "error") {
+          this.askPendingText = "";
+          this.askPendingPhase = "";
+          this.askStream = null;
+          this.askProgress = "";
+          this.showToast(data.error || "追问失败", "error");
+        }
+      });
+    },
+    startAskPoll(qid, turnId, sid) {
       this.stopAskPoll();
       this.askTimer = setInterval(async () => {
         try {
           const v = await this.api("/api/ask/" + qid);
-          this.askProgress = "已收 " + (v.responded || 0) + "/" + (v.expected || 0) + " 位同事…";
+          if (this.isCurrentSession(sid)) {
+            this.askProgress = "已收 " + (v.responded || 0) + "/" + (v.expected || 0) + " 位同事…";
+          }
           if (v.status === "done" || v.status === "error") {
             this.stopAskPoll();
-            if (v.status === "error") this.askError = "提问被 relay 拒绝：" + (v.error || "未知原因") + "（限流：默认每 5 秒 1 问）";
-            this.askProgress = "AI 综合中…";
-            const r = await this.api("/api/ask-sessions/" + this.askSession.id + "/complete", {
+            if (this.isCurrentSession(sid) && v.status === "error") {
+              this.askError = "提问被 relay 拒绝：" + (v.error || "未知原因") + "（限流：默认每 5 秒 1 问）";
+            }
+            const r = await this.api("/api/ask-sessions/" + sid + "/complete", {
               method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ turn_id: turnId, qid }),
             });
+            if (!this.isCurrentSession(sid)) { this.askSending = false; return; }
             this.askTurns = r.turns || [];
             this.scrollChat();
             await this.loadAskSessions();
             if (this.askAutoSummary) {
               this.askProgress = "AI 综合中…";
-              await this.summarizeAskSession();
+              await this.summarizeAskSession(sid);
             }
             this.askSending = false;
             this.askProgress = "";
@@ -644,7 +704,7 @@ createApp({
         } catch (e) {
           this.stopAskPoll();
           this.askSending = false;
-          this.askError = String(e.message || e);
+          if (this.isCurrentSession(sid)) this.askError = String(e.message || e);
         }
       }, 500);
     },
@@ -655,6 +715,9 @@ createApp({
       const n = Number(ms);
       if (!Number.isFinite(n) || n <= 0) return "<1ms";
       return n + "ms";
+    },
+    traceActionLabel(action) {
+      return { search: "重新检索", fetch: "读取全文", answer: "生成回答" }[action] || action;
     },
     routeLabel(route) {
       if (route === "meta") return "文件名/目录";

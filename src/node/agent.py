@@ -752,27 +752,12 @@ class NodeAgent:
             self.ask_sessions.rename(sid, question[:20])
         return {"ok": True, "session_id": sid, "qid": qid, "turn_id": turn["id"], "session": self.ask_sessions.get(sid)}
 
-    async def research_answer(self, sid: str) -> dict:
-        """可选的 AI ResearchAgent：自主 fetch / 换词再搜 / 回答。"""
+    async def _research_core(self, question: str, groups: list[str], hits: list[dict]) -> dict:
         from retrieval.research import ResearchAgent
         from retrieval.session import EvidenceSession
 
-        session = self.ask_sessions.get(sid)
-        if session is None:
-            return {"ok": False, "error": "会话不存在"}
-        if not self.ai_config.ready:
-            return {"ok": False, "error": "AI 未配置"}
-        turns = self.ask_sessions.turns(sid)
-        target = None
-        for turn in reversed(turns):
-            if turn.get("role") == "user":
-                target = turn
-                break
-        if target is None:
-            return {"ok": False, "error": "本会话还没有问题"}
-        payload = target.get("payload") or {}
-        research = EvidenceSession(str(target.get("content") or ""), payload.get("groups") or [])
-        research.add_hits(payload.get("aggregated") or [], node_fallback=self.config.relay_nick or "我")
+        research = EvidenceSession(question, groups)
+        research.add_hits(hits or [], node_fallback=self.config.relay_nick or "我")
         started = time.monotonic()
         agent = ResearchAgent(self.retrieval, self.ai_config)
         result = await agent.run(research)
@@ -792,20 +777,84 @@ class NodeAgent:
                 "format": ev.format,
                 "sources": ev.sources,
             })
-        answer = result["answer"]
-        self.ask_sessions.append(sid, "assistant", answer, {
+        return {
+            "ok": True,
+            "answer": result,
             "citations": citations,
+            "_elapsed": int((time.monotonic() - started) * 1000),
+        }
+
+    def _append_research_answer(self, sid: str, core: dict) -> None:
+        result = core.get("answer") or {}
+        self.ask_sessions.append(sid, "assistant", result.get("answer") or "", {
+            "citations": core.get("citations") or [],
             "status": "ready",
-            "elapsed_ms": int((time.monotonic() - started) * 1000),
+            "elapsed_ms": core.get("_elapsed") or 0,
             "model": self.ai_config.model,
             "context_chars": result.get("context_chars") or 0,
             "research_trace": result.get("trace") or [],
             "research": True,
         })
-        log.info("research answer sid=%s citations=%s trace_steps=%s",
-                 sid, len(citations), len(result.get("trace") or []))
-        return {"ok": True, "answer": result, "citations": citations,
+
+    async def research_answer(self, sid: str) -> dict:
+        """对最近一次提问执行自主检索/回答。"""
+        session = self.ask_sessions.get(sid)
+        if session is None:
+            return {"ok": False, "error": "会话不存在"}
+        if not self.ai_config.ready:
+            return {"ok": False, "error": "AI 未配置"}
+        turns = self.ask_sessions.turns(sid)
+        target = None
+        for turn in reversed(turns):
+            if turn.get("role") == "user":
+                target = turn
+                break
+        if target is None:
+            return {"ok": False, "error": "本会话还没有问题"}
+        payload = target.get("payload") or {}
+        core = await self._research_core(
+            str(target.get("content") or ""),
+            payload.get("groups") or [],
+            payload.get("aggregated") or [],
+        )
+        if not core.get("ok"):
+            return core
+        self._append_research_answer(sid, core)
+        log.info("research answer sid=%s citations=%s", sid, len(core.get("citations") or []))
+        return {"ok": True, "answer": core.get("answer"), "citations": core.get("citations") or [],
                 "session": self.ask_sessions.get(sid), "turns": self.ask_sessions.turns(sid)}
+
+    async def research_followup(self, sid: str, text: str) -> dict:
+        """追问也走自主检索；成功后才写入 user/assistant 轮次，失败可安全回退旧流式追问。"""
+        question = (text or "").strip()
+        if not question:
+            return {"ok": False, "error": "追问不能为空"}
+        session = self.ask_sessions.get(sid)
+        if session is None:
+            return {"ok": False, "error": "会话不存在"}
+        if not self.ai_config.ready:
+            return {"ok": False, "error": "AI 未配置"}
+        turns = self.ask_sessions.turns(sid)
+        prior = None
+        for turn in reversed(turns):
+            if turn.get("role") == "user":
+                prior = turn
+                break
+        payload = (prior or {}).get("payload") or {}
+        groups = payload.get("groups") or []
+        hits = payload.get("aggregated") or []
+        core = await self._research_core(question, groups, hits)
+        if not core.get("ok"):
+            return core
+        self.ask_sessions.append(sid, "user", question, {
+            "aggregated": hits[:30], "followup": True, "groups": groups,
+        })
+        self._append_research_answer(sid, core)
+        log.info("research followup sid=%s citations=%s", sid, len(core.get("citations") or []))
+        return {"ok": True, "answer": core.get("answer"), "citations": core.get("citations") or [],
+                "session": self.ask_sessions.get(sid), "turns": self.ask_sessions.turns(sid)}
+
+
 
     async def resolve_ai_evidence(self, sid: str) -> dict:
         """AI 综合前按现有排名取远端全文；只用 max_context_chars 一个预算。"""

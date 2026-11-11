@@ -61,7 +61,7 @@ def _sse_response(events):
 #   - 页脚版本展示
 #   - /api/health 的 version 字段
 # 任何 UI 改动必须 bump 此值，否则用户浏览器仍可能命中旧缓存。
-APP_VERSION = "0.9.29"
+APP_VERSION = "0.9.32"
 log = logging.getLogger("chiselwall.api")
 
 # 健康检查路径：公开（不含知识内容）
@@ -699,6 +699,15 @@ def create_app(agent, token: str = "") -> FastAPI:
         if not agent.ai_config.ready:
             raise HTTPException(status_code=400, detail="AI 未配置：请先在设置页填写 base_url / model")
         result = await agent.research_answer(sid)
+        if not result.get("ok") and result.get("error"):
+            raise HTTPException(status_code=400, detail=str(result["error"]))
+        return result
+
+    @app.post("/api/ask-sessions/{sid}/followup/research", dependencies=[Depends(require_token)])
+    async def ask_session_followup_research(sid: str, body: SessionAskIn) -> dict:
+        if not agent.ai_config.ready:
+            raise HTTPException(status_code=400, detail="AI 未配置：请先在设置页填写 base_url / model")
+        result = await agent.research_followup(sid, body.text or "")
         if not result.get("ok") and result.get("error"):
             raise HTTPException(status_code=400, detail=str(result["error"]))
         return result

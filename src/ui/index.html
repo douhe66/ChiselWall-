@@ -381,10 +381,10 @@
               <div v-if="t.role === 'assistant' && t.payload" class="ask-turn-meta">
                 <span v-if="t.payload.elapsed_ms" class="muted small">AI 用时 {{ t.payload.elapsed_ms }}ms · {{ t.payload.model }}<template v-if="t.payload.context_chars"> · 上下文 {{ t.payload.context_chars }} 字</template></span>
                 <span v-if="t.payload.weak_only" class="badge route-fallback">仅弱相关结果</span>
-                <details v-if="(t.payload.research_trace || []).length" class="research-trace">
+                <details v-if="(t.payload.research_trace || []).length" class="research-trace" open>
                   <summary class="muted small">研究过程 · {{ t.payload.research_trace.length }} 步</summary>
                   <div v-for="st in t.payload.research_trace" :key="st.step" class="research-step">
-                    {{ st.step }}. {{ st.action }}<span v-if="st.reason">：{{ st.reason }}</span>
+                    {{ st.step }}. {{ traceActionLabel(st.action) }}<span v-if="st.reason">：{{ st.reason }}</span>
                   </div>
                 </details>
               </div>
@@ -693,7 +693,7 @@
       </div>
       <div class="panel wide" id="set-query">
         <h3>查询智能改写</h3>
-        <p class="muted small">发送前用 AI 把问题拆成多个概念组：同义词组内 OR，不同概念按覆盖度软 AND；原问题始终保留。未配置/失败/超时自动回退原问题，不会增加硬过滤。</p>
+        <p class="muted small">影响经典搜索和首轮广播：同义词组内 OR，不同概念按覆盖度软 AND，原问题始终保留。AI 综合里的自主 search 使用模型自己写的新查询，不会再次改写。未配置/失败/超时自动回退原问题。</p>
         <div class="row">
           <label class="muted small"><input type="checkbox" v-model="queryForm.enabled"> 启用发送前拆词</label>
           <input v-model.number="queryForm.max_queries" type="number" min="1" max="4" style="max-width:110px" placeholder="最多概念组">
