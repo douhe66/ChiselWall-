@@ -102,6 +102,8 @@
           <strong>{{ h.title }}</strong>
           <span class="badge">{{ h.format }}</span>
           <span class="badge" :class="routeClass(h.route)">{{ routeLabel(h.route) }}</span>
+          <span v-if="(h.match_fields || []).includes('title')" class="badge">文件名</span>
+          <span v-if="(h.match_fields || []).includes('path')" class="badge">目录</span>
           <span v-if="h.reranked" class="badge route-hybrid">已精排</span>
           <span v-if="h.plan_clause_total" class="badge route-hybrid">覆盖 {{ h.plan_coverage }}/{{ h.plan_clause_total }}</span>
           <span class="muted small">{{ h.rel_path }}</span>
@@ -459,6 +461,8 @@
               <span class="badge">{{ h.format }}</span>
               <span v-if="h.tier === 'weak'" class="badge route-fallback">弱相关</span>
               <span class="badge" :class="routeClass(h.route)">{{ routeLabel(h.route) }}</span>
+              <span v-if="(h.match_fields || []).includes('title')" class="badge">文件名</span>
+              <span v-if="(h.match_fields || []).includes('path')" class="badge">目录</span>
               <span class="badge kind" v-for="n in (h.nodes || [])" :key="n">@{{ n }}</span>
               <span class="muted small">{{ h.rel_path }}</span>
             </header>

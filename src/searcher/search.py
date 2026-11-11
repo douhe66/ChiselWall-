@@ -76,10 +76,11 @@ class SearchHit:
     chunk_seq: int
     snippet_html: str
     snippet_text: str
-    route: str  # jieba / jieba_and / jieba_or / trigram / like / vector / hybrid
+    route: str  # jieba / jieba_and / jieba_or / trigram / like / meta / vector / hybrid
     tier: str = "strong"  # strong | weak（weak 默认折叠、不进 AI 上下文）
     plan_coverage: int = 0
     plan_clause_total: int = 0
+    match_fields: tuple[str, ...] = ()  # title/path/content
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -162,6 +163,7 @@ class Searcher:
             )
             if len(hits) >= (min(topk, 3) if weak else topk):
                 break
+        hits = self._merge_meta(query, terms, hits, topk)
         return self._anchor_ascii(query, self._merge_vector(query, terms, hits, topk))
 
     @staticmethod
@@ -172,10 +174,119 @@ class Searcher:
             return hits
         kept = [
             h for h in hits
-            if h.route in ("vector", "hybrid")
-            or any(t in ((h.title or "") + " " + (h.snippet_text or "")).lower() for t in toks)
+            if h.route in ("vector", "hybrid", "meta")
+            or any(t in ((h.title or "") + " " + (h.rel_path or "") + " " + (h.snippet_text or "")).lower() for t in toks)
         ]
         return kept
+
+    # ---- 文件名/目录元数据召回 ----
+    def _meta_rows(self, query: str, terms: list[str], limit: int) -> list:
+        # 有完整短语时优先用短语（如“文件锁”），避免把“文件”这种泛词
+        # 当成元数据召回词；没有短语（如“香港 IP”）才退回分词。
+        phrases = [p for p in query_phrases(query) if len(p) >= 2]
+        sig = phrases if phrases else [t for t in terms if len(t) >= 2 or (t.isascii() and t.isalnum())]
+        if not sig:
+            return []
+        parts = []
+        for t in sig:
+            q = fts_quote(t)
+            parts.append(f"(title_jieba : {q} OR path_jieba : {q} OR title : {q} OR rel_path : {q})")
+        match = " OR ".join(parts)
+        sql = (
+            "SELECT f.rowid AS doc_id, d.title, d.rel_path, d.abs_path, d.format, d.mount_id, "
+            "bm25(docs_meta_fts, 1.0, 0.5, 1.0, 0.5) AS meta_score "
+            "FROM docs_meta_fts AS f JOIN docs AS d ON d.doc_id=f.rowid "
+            "JOIN mounts AS m ON m.mount_id=d.mount_id "
+            "WHERE docs_meta_fts MATCH ? AND d.status='indexed'" + self._policy + " "
+            "ORDER BY meta_score LIMIT ?"
+        )
+        return self.db.query(sql, (match, int(limit)))
+
+    @staticmethod
+    def _term_in(value: str, terms: list[str]) -> bool:
+        low = (value or "").lower()
+        return any(t.lower() in low for t in terms if t)
+
+    def _meta_hit(self, row, terms: list[str], meta_rank: int) -> Optional[SearchHit]:
+        doc_id = int(row["doc_id"])
+        chunks = self.db.get_chunk_texts(doc_id)
+        if not chunks:
+            return None
+        # 选正文中覆盖 query 词最多的 chunk；没有正文命中就取第一块。
+        best_idx, best_score = 0, -1
+        for i, text in enumerate(chunks):
+            score = sum(1 for t in terms if t.lower() in text.lower())
+            if score > best_score:
+                best_idx, best_score = i, score
+        text = chunks[best_idx]
+        snippet_html, snippet_text = self._build_snippet(text, terms)
+        title = str(row["title"] or "")
+        rel_path = str(row["rel_path"] or "")
+        fields = []
+        if self._term_in(title, terms):
+            fields.append("title")
+        if self._term_in(rel_path, terms):
+            fields.append("path")
+        if best_score > 0:
+            fields.append("content")
+        return SearchHit(
+            doc_id=doc_id,
+            mount_id=int(row["mount_id"]),
+            title=title,
+            rel_path=rel_path,
+            abs_path=str(row["abs_path"] or ""),
+            format=str(row["format"] or ""),
+            score=-float(row["meta_score"] or 0.0),
+            chunk_seq=best_idx,
+            snippet_html=snippet_html,
+            snippet_text=snippet_text,
+            route="meta",
+            tier="strong" if best_score > 0 else "weak",
+            match_fields=tuple(fields),
+        )
+
+    def _merge_meta(self, query: str, terms: list[str], hits: list[SearchHit], topk: int) -> list[SearchHit]:
+        rows = self._meta_rows(query, terms, max(topk * 3, 24))
+        if not rows:
+            return hits
+        content_rank = {int(h.doc_id): i for i, h in enumerate(hits)}
+        meta_rank: dict[int, int] = {}
+        meta_hits: dict[int, SearchHit] = {}
+        for i, row in enumerate(rows):
+            doc_id = int(row["doc_id"])
+            meta_rank.setdefault(doc_id, i)
+            if doc_id not in meta_hits:
+                mh = self._meta_hit(row, terms, i)
+                if mh is not None:
+                    meta_hits[doc_id] = mh
+
+        merged: list[SearchHit] = []
+        seen: set[int] = set()
+        for h in hits:
+            doc_id = int(h.doc_id)
+            seen.add(doc_id)
+            if doc_id in meta_hits:
+                h.match_fields = meta_hits[doc_id].match_fields
+            merged.append(h)
+        for doc_id, mh in meta_hits.items():
+            if doc_id not in seen:
+                merged.append(mh)
+
+        total_terms = max(1, len([t for t in terms if t]))
+        def score(h: SearchHit) -> float:
+            doc_id = int(h.doc_id)
+            rrf = 1.0 / (60.0 + content_rank[doc_id]) if doc_id in content_rank else 0.0
+            if doc_id in meta_rank:
+                rrf += 0.7 / (60.0 + meta_rank[doc_id])
+            covered = sum(
+                1 for t in set(t.lower() for t in terms if t)
+                if t in (h.title or "").lower() or t in (h.rel_path or "").lower()
+                or t in (h.snippet_text or "").lower()
+            )
+            return rrf + 0.15 * (covered / total_terms)
+
+        merged.sort(key=score, reverse=True)
+        return merged[:max(topk, len(hits))]
 
     # ---- 向量混合（M7 / P0 噪声收敛） ----
     def _merge_vector(self, query, terms, bm_hits, topk):

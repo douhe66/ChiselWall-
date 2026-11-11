@@ -61,7 +61,7 @@ def _sse_response(events):
 #   - 页脚版本展示
 #   - /api/health 的 version 字段
 # 任何 UI 改动必须 bump 此值，否则用户浏览器仍可能命中旧缓存。
-APP_VERSION = "0.9.24"
+APP_VERSION = "0.9.25"
 log = logging.getLogger("chiselwall.api")
 
 # 健康检查路径：公开（不含知识内容）
@@ -681,6 +681,7 @@ def create_app(agent, token: str = "") -> FastAPI:
 
         if not agent.ai_config.ready:
             raise HTTPException(status_code=400, detail="AI 未配置：请先在设置页填写 base_url / model")
+        await agent.resolve_ai_evidence(sid)
         result = await asyncio.to_thread(agent.ask_session_summarize, sid)
         if not result.get("ok") and result.get("error"):
             raise HTTPException(status_code=400, detail=str(result["error"]))
@@ -690,6 +691,7 @@ def create_app(agent, token: str = "") -> FastAPI:
     async def ask_session_summarize_stream(sid: str):
         if not agent.ai_config.ready:
             raise HTTPException(status_code=400, detail="AI 未配置：请先在设置页填写 base_url / model")
+        await agent.resolve_ai_evidence(sid)
         return _sse_response(agent.ask_session_summarize_stream(sid))
 
     @app.post("/api/ask-sessions/{sid}/followup/stream", dependencies=[Depends(require_token)])
@@ -699,6 +701,8 @@ def create_app(agent, token: str = "") -> FastAPI:
             raise HTTPException(status_code=400, detail="追问不能为空")
         if body.summarize and not agent.ai_config.ready:
             raise HTTPException(status_code=400, detail="AI 未配置：请先在设置页填写 base_url / model")
+        if body.summarize:
+            await agent.resolve_ai_evidence(sid)
         return _sse_response(agent.ask_session_followup_stream(sid, text, body.summarize))
 
     @app.post("/api/ask-sessions/{sid}/followup", dependencies=[Depends(require_token)])
@@ -708,6 +712,8 @@ def create_app(agent, token: str = "") -> FastAPI:
         text = (body.text or "").strip()
         if not text:
             raise HTTPException(status_code=400, detail="追问不能为空")
+        if body.summarize:
+            await agent.resolve_ai_evidence(sid)
         result = await asyncio.to_thread(agent.ask_session_followup, sid, text, body.summarize)
         if not result.get("ok") and result.get("error"):
             raise HTTPException(status_code=400, detail=str(result["error"]))

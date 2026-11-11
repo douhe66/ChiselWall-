@@ -42,7 +42,7 @@ def build_context(
         snippet = str(hit.get("ai_text") or hit.get("snippet_text") or hit.get("snippet_html") or "")
         limit = snippet_chars
         if hit.get("ai_text"):
-            limit = max(snippet_chars, min(4000, max_chars // 2))
+            limit = max_chars
         if hit.get("context_full"):
             limit = max(snippet_chars, min(16000, max_chars // 2))
         if hit.get("context_full") or hit.get("ai_text"):

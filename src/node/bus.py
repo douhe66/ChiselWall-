@@ -633,7 +633,7 @@ class NodeBus:
                         chunks = db.get_chunk_texts(int(h.doc_id))
                         from ai.rag import select_local_window
 
-                        ai_text = select_local_window(chunks, int(h.chunk_seq), max_chars=4000)
+                        ai_text = select_local_window(chunks, int(h.chunk_seq), max_chars=12000)
                         if ai_text:
                             d["ai_text"] = ai_text
                 except Exception:
@@ -660,6 +660,7 @@ class NodeBus:
         asker = str(msg.get("asker") or "")
         req_id = str(msg.get("req_id") or "")
         doc_id = int(msg.get("doc_id") or 0)
+        max_chars = max(1000, min(50000, int(msg.get("max_chars") or 8000)))
         if asker in ("", self.cfg.nick):
             return
         bucket = self._fetch_buckets.setdefault(asker, TokenBucket(rate=0.2, burst=4))
@@ -678,7 +679,7 @@ class NodeBus:
             )
             return
         try:
-            text = await asyncio.to_thread(self.searcher.get_doc_text, doc_id, 20000)
+            text = await asyncio.to_thread(self.searcher.get_doc_text, doc_id, max_chars)
         except Exception as exc:
             log.exception("读取文档失败 doc_id=%s", doc_id)
             text = ""
@@ -687,10 +688,10 @@ class NodeBus:
             err = "" if text else "文档为空或不可读"
         await self.client.send(
             {"type": "fetch_result", "to": asker, "req_id": req_id, "doc_id": doc_id,
-             "text": (text or "")[:8000], "error": err}
+             "text": (text or "")[:max_chars], "error": err}
         )
 
-    async def fetch(self, node: str, doc_id: int, timeout_s: float = 15.0) -> str:
+    async def fetch(self, node: str, doc_id: int, timeout_s: float = 15.0, max_chars: int = 8000) -> str:
         """向对端请求全文预览（仅限其最近返回给本机的搜索结果）。"""
         import uuid
 
@@ -702,7 +703,7 @@ class NodeBus:
         try:
             ok = await self.client.send(
                 {"type": "fetch", "to": node, "asker": self.cfg.nick,
-                 "req_id": req_id, "doc_id": int(doc_id)}
+                 "req_id": req_id, "doc_id": int(doc_id), "max_chars": int(max_chars)}
             )
             if not ok:
                 raise ValueError("relay 发送失败")

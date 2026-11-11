@@ -625,6 +625,7 @@ createApp({
       return n + "ms";
     },
     routeLabel(route) {
+      if (route === "meta") return "文件名/目录";
       if (route === "plan") return "计划命中";
       if (route === "hybrid") return "混合命中";
       if (route === "vector") return "语义命中";

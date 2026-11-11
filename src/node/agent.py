@@ -749,6 +749,69 @@ class NodeAgent:
             self.ask_sessions.rename(sid, question[:20])
         return {"ok": True, "session_id": sid, "qid": qid, "turn_id": turn["id"], "session": self.ask_sessions.get(sid)}
 
+    async def resolve_ai_evidence(self, sid: str) -> dict:
+        """AI 综合前按现有排名取远端全文；只用 max_context_chars 一个预算。"""
+        session = self.ask_sessions.get(sid)
+        if session is None:
+            return {"ok": False, "error": "会话不存在", "fetched": 0}
+        turns = self.ask_sessions.turns(sid)
+        target = None
+        for turn in reversed(turns):
+            if turn.get("role") == "user" and (turn.get("payload") or {}).get("aggregated"):
+                target = turn
+                break
+        if target is None:
+            return {"ok": False, "error": "没有搜索结果", "fetched": 0}
+        payload = target.get("payload") or {}
+        aggregated = self.enrich_local_context(payload.get("aggregated") or [])
+        budget = max(2000, int(getattr(self.ai_config, "max_context_chars", 24000) or 24000))
+        used = sum(
+            len(str(h.get("ai_text") or h.get("snippet_text") or ""))
+            for h in aggregated if h.get("context_full")
+        )
+        fetched = 0
+        failed = 0
+        nick = self.config.relay_nick or "我"
+        changed = False
+        for h in aggregated:
+            if used >= budget:
+                break
+            if h.get("evidence_full") or h.get("local"):
+                continue
+            sources = h.get("sources") or []
+            src = next((s for s in sources if str(s.get("node") or "") != nick and s.get("doc_id")), None)
+            if src is None:
+                continue
+            remaining = budget - used
+            if remaining < 1000:
+                break
+            try:
+                text = await self.bus.fetch(
+                    str(src.get("node")), int(src["doc_id"]), max_chars=remaining
+                )
+            except Exception as exc:
+                failed += 1
+                log.warning("AI evidence fetch failed node=%s doc_id=%s: %s",
+                            src.get("node"), src.get("doc_id"), exc)
+                continue
+            if not text:
+                failed += 1
+                continue
+            h["ai_text"] = text
+            h["evidence_full"] = True
+            h["match_fields"] = list(h.get("match_fields") or [])
+            used += len(text)
+            fetched += 1
+            changed = True
+        if changed:
+            payload["aggregated"] = aggregated[:30]
+            payload["evidence_fetched"] = fetched
+            payload["evidence_chars"] = used
+            self.ask_sessions.update_payload(int(target["id"]), payload)
+        log.info("AI evidence resolve sid=%s fetched=%s failed=%s chars=%s budget=%s",
+                 sid, fetched, failed, used, budget)
+        return {"ok": True, "fetched": fetched, "failed": failed, "context_chars": used, "budget": budget}
+
     def ask_session_complete(self, sid: str, turn_id: int, qid: str) -> dict:
         session = self.ask_sessions.get(sid)
         if session is None:

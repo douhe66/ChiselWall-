@@ -23,6 +23,7 @@ M2 规模下索引写与检索读串行开销可忽略；WAL + busy_timeout 兜�
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 import threading
 import uuid
@@ -94,6 +95,10 @@ CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_trigram USING fts5(
   content,
   tokenize='trigram'
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS docs_meta_fts USING fts5(
+  title, rel_path, title_jieba, path_jieba,
+  tokenize='unicode61'
 );
 CREATE TABLE IF NOT EXISTS sensitivity_rules(
   rule_id TEXT PRIMARY KEY,
@@ -187,6 +192,7 @@ class IndexDB:
             self._conn.executescript(SCHEMA)
             self._migrate()
             self._conn.commit()
+            self._ensure_docs_meta()
 
     def _migrate(self) -> None:
         """旧版本 schema 迁移（幂等，每次打开库执行一次）。
@@ -248,6 +254,41 @@ class IndexDB:
             log.info("migrated sensitivity_rules.validator")
         self._conn.commit()
 
+    # ---- 文档元数据 FTS（文件名/目录名） ----
+    def _ensure_docs_meta(self) -> None:
+        docs_n = int(self._conn.execute("SELECT COUNT(*) FROM docs").fetchone()[0])
+        meta_n = int(self._conn.execute("SELECT COUNT(*) FROM docs_meta_fts").fetchone()[0])
+        if docs_n != meta_n:
+            self.rebuild_docs_meta()
+
+    def _meta_tokens(self, text: str) -> str:
+        from indexer.jieba_util import tokenize
+
+        cleaned = re.sub(r"[/\\_.\-]+", " ", text or "")
+        return tokenize(cleaned)
+
+    def _update_docs_meta_locked(self, doc_id: int, title: str, rel_path: str) -> None:
+        self._conn.execute("DELETE FROM docs_meta_fts WHERE rowid=?", (int(doc_id),))
+        title = title or ""
+        rel_path = rel_path or ""
+        stem = Path(rel_path).stem if rel_path else ""
+        title_all = (title + " " + stem).strip()
+        self._conn.execute(
+            "INSERT INTO docs_meta_fts(rowid, title, rel_path, title_jieba, path_jieba) "
+            "VALUES(?,?,?,?,?)",
+            (int(doc_id), title_all, rel_path, self._meta_tokens(title_all), self._meta_tokens(rel_path)),
+        )
+
+    def rebuild_docs_meta(self) -> int:
+        """从 docs 全量重建文件名/路径 FTS；启动迁移与手动修复使用。"""
+        with self._lock:
+            self._conn.execute("DELETE FROM docs_meta_fts")
+            rows = self._conn.execute("SELECT doc_id, title, rel_path FROM docs").fetchall()
+            for r in rows:
+                self._update_docs_meta_locked(int(r["doc_id"]), str(r["title"] or ""), str(r["rel_path"] or ""))
+            self._conn.commit()
+            return len(rows)
+
     def close(self) -> None:
         with self._lock:
             self._conn.close()
@@ -292,6 +333,11 @@ class IndexDB:
     def remove_mount(self, mount_id: int) -> None:
         """删除挂载：先摘除 FTS 行，再删挂载（docs/chunks 级联删除）。"""
         with self._lock:
+            doc_rows = self._conn.execute(
+                "SELECT doc_id FROM docs WHERE mount_id=?", (mount_id,)
+            ).fetchall()
+            for r in doc_rows:
+                self._conn.execute("DELETE FROM docs_meta_fts WHERE rowid=?", (int(r["doc_id"]),))
             rows = self._conn.execute(
                 "SELECT c.chunk_id FROM chunks c JOIN docs d ON d.doc_id = c.doc_id "
                 "WHERE d.mount_id=?",
@@ -350,6 +396,7 @@ class IndexDB:
             row = self._conn.execute(
                 "SELECT doc_id FROM docs WHERE mount_id=? AND rel_path=?", (mount_id, rel_path)
             ).fetchone()
+            self._update_docs_meta_locked(int(row["doc_id"]), title, rel_path)
             self._conn.commit()
             return int(row["doc_id"])
 
@@ -392,6 +439,7 @@ class IndexDB:
                 "SELECT doc_id FROM docs WHERE mount_id=? AND rel_path=?", (mount_id, rel_path)
             ).fetchone()
             if row:
+                self._conn.execute("DELETE FROM docs_meta_fts WHERE rowid=?", (int(row["doc_id"]),))
                 self._delete_chunks_locked(int(row["doc_id"]))
                 self._conn.execute("DELETE FROM docs WHERE doc_id=?", (row["doc_id"],))
             self._conn.commit()
@@ -405,6 +453,7 @@ class IndexDB:
                 (mount_id, prefix, prefix + "/%"),
             ).fetchall()
             for r in rows:
+                self._conn.execute("DELETE FROM docs_meta_fts WHERE rowid=?", (int(r["doc_id"]),))
                 self._delete_chunks_locked(int(r["doc_id"]))
                 self._conn.execute("DELETE FROM docs WHERE doc_id=?", (r["doc_id"],))
             self._conn.commit()
