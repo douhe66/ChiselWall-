@@ -19,6 +19,15 @@ createApp({
       groups: [],
       docs: [],
       docsFilter: { mountId: "", groupId: "" },
+      // 敏感词检查（L0+L1）
+      sensitivity: { pending_docs: 0, hit_count: 0, high_docs: 0, rules: 0, enabled_rules: 0, scanning: false },
+      sensitivityRules: [],
+      sensitivityPending: [],
+      sensitivityDetail: null,
+      sensitivityReviewOpen: false,
+      sensitivityRuleForm: { label: "", pattern: "", severity: "medium" },
+      sensitivitySaving: false,
+      scopeMenu: { open: false, x: 0, y: 0, type: "", id: 0, name: "", ignored: false },
       errorMsg: "",
       // 分组
       groupAddOpen: false,
@@ -65,7 +74,6 @@ createApp({
       askAutoSummary: localStorage.getItem("chisel_ask_auto_summary") !== "0",
       askGroupsOpen: false,
       expandedGroup: "",
-      privacyNoticeClosed: localStorage.getItem("chisel_privacy_notice") === "1",
       followupText: "",
       followupBusy: false,
       askFollowupSearch: false,
@@ -234,7 +242,7 @@ createApp({
       this.page = page;
       if (page === "ask") { this.loadRelay(); this.loadAI(); this.loadAskSessions(); this.loadQuery(); }
       if (page === "chat") { this.loadChatSessions(); this.loadAI(); }
-      if (page === "settings") { this.loadRelayConfig(); this.loadRelay(); this.loadAI(); this.loadVector(); this.loadRerank(); this.loadQuery(); }
+      if (page === "settings") { this.loadRelayConfig(); this.loadRelay(); this.loadAI(); this.loadVector(); this.loadRerank(); this.loadQuery(); this.loadSensitivityRules(); }
     },
     groupDesc(name) {
       const g = (this.relayGroupInfo || []).find((x) => x.name === name);
@@ -1180,6 +1188,7 @@ createApp({
         this.failed = await this.api("/api/failed");
         this.excluded = await this.api("/api/excluded");
         this.groups = await this.api("/api/groups");
+        this.sensitivity = await this.api("/api/sensitivity/summary");
         this.errorMsg = "";
       } catch (e) {
         if (String(e.message) !== "need token") this.errorMsg = String(e.message || e);
@@ -1198,6 +1207,149 @@ createApp({
         if (this.docsFilter.groupId) p.push("group_id=" + encodeURIComponent(this.docsFilter.groupId));
         this.docs = await this.api("/api/docs?" + p.join("&"));
       } catch (e) { /* 静默：refresh 已展示错误 */ }
+    },
+    // ---- 敏感词检查（L0+L1） ----
+    async loadSensitivityRules() {
+      try { this.sensitivityRules = (await this.api("/api/sensitivity/rules")).rules || []; }
+      catch (e) { /* refresh 已展示错误 */ }
+    },
+    async loadSensitivityPending() {
+      try { this.sensitivityPending = (await this.api("/api/sensitivity/pending?limit=200")).docs || []; }
+      catch (e) { /* ignore */ }
+    },
+    openSensitivityReview() {
+      this.sensitivityReviewOpen = true;
+      this.sensitivityDetail = null;
+      this.loadSensitivityPending();
+    },
+    closeSensitivityDrawer() {
+      this.sensitivityReviewOpen = false;
+      this.sensitivityDetail = null;
+    },
+    async openSensitivityDoc(d) {
+      try {
+        this.sensitivityDetail = await this.api("/api/sensitivity/docs/" + d.doc_id);
+        this.sensitivityReviewOpen = true;
+      } catch (e) { this.showToast("读取敏感词详情失败：" + (e.message || e), "error"); }
+    },
+    async ackSensitivityDoc() {
+      if (!this.sensitivityDetail) return;
+      try {
+        await this.api("/api/sensitivity/docs/" + this.sensitivityDetail.doc_id + "/ack", { method: "POST" });
+        this.showToast("已确认这篇笔记的当前提示", "info");
+        this.sensitivityDetail = null;
+        await this.loadSensitivityPending();
+        await this.refresh();
+      } catch (e) { this.showToast("确认失败：" + (e.message || e), "error"); }
+    },
+    async setSensitivityDocPrivate() {
+      if (!this.sensitivityDetail) return;
+      try {
+        await this.api("/api/docs/" + this.sensitivityDetail.doc_id + "/sharing", {
+          method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ state: "private" }),
+        });
+        this.showToast("已设为仅本机：不再计入共享前检查", "info");
+        this.sensitivityDetail = null;
+        await this.loadSensitivityPending();
+        await this.refresh();
+      } catch (e) { this.showToast("修改共享状态失败：" + (e.message || e), "error"); }
+    },
+    async ignoreSensitivityDoc() {
+      if (!this.sensitivityDetail) return;
+      const next = !this.sensitivityDetail.doc_ignored;
+      try {
+        const r = await this.api("/api/sensitivity/docs/" + this.sensitivityDetail.doc_id + "/ignore", {
+          method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ignored: next }),
+        });
+        this.sensitivityDetail = r;
+        this.showToast(next ? "本笔记已不再提醒；可随时恢复" : "已恢复本笔记提醒", "info");
+        await this.refresh();
+      } catch (e) { this.showToast("操作失败：" + (e.message || e), "error"); }
+    },
+    async ignoreSensitivityHit(h) {
+      if (!this.sensitivityDetail) return;
+      try {
+        this.sensitivityDetail = await this.api(
+          "/api/sensitivity/docs/" + this.sensitivityDetail.doc_id + "/ignore-rule",
+          { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rule_id: h.rule_id }) },
+        );
+        this.showToast("已忽略此词（仅这篇笔记）", "info");
+        await this.refresh();
+      } catch (e) { this.showToast("忽略失败：" + (e.message || e), "error"); }
+    },
+    async toggleSensitivityRule(r) {
+      try {
+        await this.api("/api/sensitivity/rules/" + encodeURIComponent(r.rule_id), {
+          method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: !r.enabled }),
+        });
+        await this.loadSensitivityRules();
+        await this.refresh();
+      } catch (e) { this.showToast("规则更新失败：" + (e.message || e), "error"); }
+    },
+    async addSensitivityRule() {
+      const pattern = (this.sensitivityRuleForm.pattern || "").trim();
+      if (!pattern) return;
+      this.sensitivitySaving = true;
+      try {
+        await this.api("/api/sensitivity/rules", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            label: (this.sensitivityRuleForm.label || "").trim() || pattern,
+            pattern,
+            severity: this.sensitivityRuleForm.severity,
+          }),
+        });
+        this.sensitivityRuleForm = { label: "", pattern: "", severity: "medium" };
+        await this.loadSensitivityRules();
+        await this.refresh();
+        this.showToast("已加入自定义敏感词；正在后台重扫", "info");
+      } catch (e) { this.showToast("添加失败：" + (e.message || e), "error"); }
+      finally { this.sensitivitySaving = false; }
+    },
+    async deleteSensitivityRule(r) {
+      if (r.source !== "custom") return;
+      if (!confirm("删除自定义敏感词「" + r.label + "」？")) return;
+      try {
+        await this.api("/api/sensitivity/rules/" + encodeURIComponent(r.rule_id), { method: "DELETE" });
+        await this.loadSensitivityRules();
+        await this.refresh();
+      } catch (e) { this.showToast("删除失败：" + (e.message || e), "error"); }
+    },
+    async rescanSensitivity() {
+      try {
+        await this.api("/api/sensitivity/rescan", { method: "POST" });
+        this.showToast("已开始后台检查；完成后红点会更新", "info");
+        setTimeout(() => this.refresh(), 1200);
+      } catch (e) { this.showToast("启动检查失败：" + (e.message || e), "error"); }
+    },
+    openScopeMenu(e, type, item) {
+      this.scopeMenu = {
+        open: true, x: e.clientX, y: e.clientY, type, id: type === "mount" ? item.mount_id : item.group_id,
+        name: type === "mount" ? item.path : item.name, ignored: !!item.sensitivity_ignored,
+      };
+    },
+    closeScopeMenu() { this.scopeMenu.open = false; },
+    severityLabel(s) { return { high: '高置信', medium: '中置信', low: '低置信' }[s] || s; },
+    shareLabel(s) { return { shared: '共享', private: '仅本机', hidden: '隐藏' }[s] || s; },
+    async toggleMenuScope() {
+      const m = this.scopeMenu;
+      const item = m.type === 'mount'
+        ? { mount_id: m.id, sensitivity_ignored: m.ignored }
+        : { group_id: m.id, sensitivity_ignored: m.ignored };
+      await this.toggleScopeIgnore(m.type, item);
+    },
+    async toggleScopeIgnore(type, item) {
+      const ignored = !item.sensitivity_ignored;
+      try {
+        const url = type === "mount" ? "/api/mounts/" + item.mount_id : "/api/groups/" + item.group_id;
+        await this.api(url, {
+          method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sensitivity_ignored: ignored }),
+        });
+        item.sensitivity_ignored = ignored;
+        this.scopeMenu.open = false;
+        this.showToast(ignored ? "已忽略该" + (type === "mount" ? "挂载" : "分组") + "的敏感词提醒" : "已恢复敏感词提醒", "info");
+        await this.refresh();
+      } catch (e) { this.showToast("更新失败：" + (e.message || e), "error"); }
     },
     // ---- 搜索 ----
     clearSearch() {
@@ -1238,10 +1390,6 @@ createApp({
         this.refresh();
       } catch (e) { this.errorMsg = String(e.message || e); }
     },
-    dismissPrivacyNotice() {
-      this.privacyNoticeClosed = true;
-      localStorage.setItem("chisel_privacy_notice", "1");
-    },
     async toggleMount(m) {
       try {
         const r = await this.api("/api/mounts/" + m.mount_id, {
@@ -1261,6 +1409,7 @@ createApp({
         });
         d.share_state = state;
         this.showToast(state === "shared" ? "已设为共享" : (state === "private" ? "已设为仅本机：远端不可搜，本机仍可搜" : "已隐藏：本机与远端都不参与搜索"), "info");
+        await this.refresh();
       } catch (e) {
         this.showToast("共享状态修改失败：" + (e.message || e), "error");
       }
@@ -1459,6 +1608,7 @@ createApp({
         this.focusSearch();
       }
     });
+    window.addEventListener("click", () => { if (this.scopeMenu.open) this.scopeMenu.open = false; });
     this.refresh();
     this.loadRelay();
     this.loadAI();

@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 import threading
+import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -37,7 +38,8 @@ CREATE TABLE IF NOT EXISTS mounts(
   kind TEXT NOT NULL CHECK(kind IN ('directory','obsidian','file','siyuan')),
   path TEXT NOT NULL UNIQUE,
   added_at TEXT NOT NULL,
-  enabled INTEGER NOT NULL DEFAULT 1
+  enabled INTEGER NOT NULL DEFAULT 1,
+  sensitivity_ignored INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS exclude_rules(
   rule_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -48,7 +50,8 @@ CREATE TABLE IF NOT EXISTS exclude_rules(
 CREATE TABLE IF NOT EXISTS groups(
   group_id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL UNIQUE,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  sensitivity_ignored INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS group_members(
   member_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -92,6 +95,43 @@ CREATE VIRTUAL TABLE IF NOT EXISTS chunks_trigram USING fts5(
   content,
   tokenize='trigram'
 );
+CREATE TABLE IF NOT EXISTS sensitivity_rules(
+  rule_id TEXT PRIMARY KEY,
+  source TEXT NOT NULL CHECK(source IN ('builtin','custom')),
+  label TEXT NOT NULL,
+  category TEXT NOT NULL DEFAULT '',
+  severity TEXT NOT NULL DEFAULT 'medium' CHECK(severity IN ('high','medium','low')),
+  kind TEXT NOT NULL CHECK(kind IN ('word','regex')),
+  scope TEXT NOT NULL DEFAULT 'all' CHECK(scope IN ('all','path')),
+  validator TEXT NOT NULL DEFAULT '',
+  pattern TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  version INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sens_rules_source ON sensitivity_rules(source, enabled);
+CREATE TABLE IF NOT EXISTS sensitivity_hits(
+  doc_id INTEGER NOT NULL REFERENCES docs(doc_id) ON DELETE CASCADE,
+  rule_id TEXT NOT NULL REFERENCES sensitivity_rules(rule_id) ON DELETE CASCADE,
+  count INTEGER NOT NULL DEFAULT 1,
+  excerpt TEXT NOT NULL DEFAULT '',
+  severity TEXT NOT NULL DEFAULT 'medium',
+  PRIMARY KEY(doc_id, rule_id)
+);
+CREATE INDEX IF NOT EXISTS idx_sens_hits_doc ON sensitivity_hits(doc_id);
+CREATE TABLE IF NOT EXISTS doc_sensitivity(
+  doc_id INTEGER PRIMARY KEY REFERENCES docs(doc_id) ON DELETE CASCADE,
+  hit_signature TEXT NOT NULL DEFAULT '',
+  ack_signature TEXT NOT NULL DEFAULT '',
+  ignored INTEGER NOT NULL DEFAULT 0,
+  scanned_at TEXT
+);
+CREATE TABLE IF NOT EXISTS sensitivity_doc_rule_ignores(
+  doc_id INTEGER NOT NULL REFERENCES docs(doc_id) ON DELETE CASCADE,
+  rule_id TEXT NOT NULL REFERENCES sensitivity_rules(rule_id) ON DELETE CASCADE,
+  PRIMARY KEY(doc_id, rule_id)
+);
 """
 
 
@@ -109,6 +149,7 @@ class MountRecord:
     path: str
     added_at: str
     enabled: int = 1
+    sensitivity_ignored: int = 0
 
 
 @dataclass(frozen=True)
@@ -193,6 +234,19 @@ class IndexDB:
         if "enabled" not in mount_cols:
             self._conn.execute("ALTER TABLE mounts ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1")
             self._conn.commit()
+        mount_cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(mounts)").fetchall()}
+        if "sensitivity_ignored" not in mount_cols:
+            self._conn.execute("ALTER TABLE mounts ADD COLUMN sensitivity_ignored INTEGER NOT NULL DEFAULT 0")
+            log.info("migrated mounts.sensitivity_ignored")
+        group_cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(groups)").fetchall()}
+        if "sensitivity_ignored" not in group_cols:
+            self._conn.execute("ALTER TABLE groups ADD COLUMN sensitivity_ignored INTEGER NOT NULL DEFAULT 0")
+            log.info("migrated groups.sensitivity_ignored")
+        rule_cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(sensitivity_rules)").fetchall()}
+        if "validator" not in rule_cols:
+            self._conn.execute("ALTER TABLE sensitivity_rules ADD COLUMN validator TEXT NOT NULL DEFAULT ''")
+            log.info("migrated sensitivity_rules.validator")
+        self._conn.commit()
 
     def close(self) -> None:
         with self._lock:
@@ -434,7 +488,7 @@ class IndexDB:
 
     def list_groups(self) -> list[dict]:
         rows = self.query(
-            "SELECT g.group_id, g.name, g.created_at, "
+            "SELECT g.group_id, g.name, g.created_at, g.sensitivity_ignored, "
             "COUNT(m.member_id) AS members FROM groups g "
             "LEFT JOIN group_members m ON m.group_id = g.group_id "
             "GROUP BY g.group_id ORDER BY g.group_id"
@@ -541,6 +595,185 @@ class IndexDB:
             raise ValueError("share_state 须为 shared/private/hidden")
         with self._lock:
             self._conn.execute("UPDATE docs SET share_state=? WHERE doc_id=?", (state, int(doc_id)))
+            self._conn.commit()
+
+    # ---- 敏感词规则 / 命中 / 确认（L0+L1） ----
+    def list_sensitivity_rules(self) -> list[dict]:
+        rows = self.query(
+            "SELECT rule_id, source, label, category, severity, kind, scope, pattern, "
+            "enabled, version, validator, created_at, updated_at FROM sensitivity_rules "
+            "ORDER BY CASE source WHEN 'builtin' THEN 0 ELSE 1 END, rowid"
+        )
+        return [dict(r) for r in rows]
+
+    def get_sensitivity_rule(self, rule_id: str) -> Optional[dict]:
+        rows = self.query("SELECT * FROM sensitivity_rules WHERE rule_id=?", (rule_id,))
+        return dict(rows[0]) if rows else None
+
+    def upsert_builtin_sensitivity_rule(
+        self, rule_id: str, label: str, category: str, severity: str,
+        kind: str, scope: str, pattern: str, version: int, validator: str = "",
+    ) -> None:
+        now = _now()
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO sensitivity_rules(rule_id, source, label, category, severity, "
+                "kind, scope, validator, pattern, enabled, version, created_at, updated_at) "
+                "VALUES(?, 'builtin', ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?) "
+                "ON CONFLICT(rule_id) DO UPDATE SET label=excluded.label, "
+                "category=excluded.category, severity=excluded.severity, kind=excluded.kind, "
+                "scope=excluded.scope, validator=excluded.validator, pattern=excluded.pattern, "
+                "version=excluded.version, updated_at=excluded.updated_at",
+                (rule_id, label, category, severity, kind, scope, validator, pattern, int(version), now, now),
+            )
+            self._conn.commit()
+
+    def add_custom_sensitivity_rule(
+        self, label: str, pattern: str, category: str = "", severity: str = "medium",
+    ) -> dict:
+        if severity not in ("high", "medium", "low"):
+            raise ValueError("severity 须为 high/medium/low")
+        label = (label or "").strip()
+        pattern = (pattern or "").strip()
+        if not label:
+            raise ValueError("规则名称不能为空")
+        if not pattern:
+            raise ValueError("敏感词不能为空")
+        if len(pattern) > 200:
+            raise ValueError("敏感词过长（最多 200 字）")
+        rule_id = "custom." + uuid.uuid4().hex[:12]
+        now = _now()
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO sensitivity_rules(rule_id, source, label, category, severity, "
+                "kind, scope, pattern, enabled, version, created_at, updated_at) "
+                "VALUES(?, 'custom', ?, ?, ?, 'word', 'all', ?, 1, 1, ?, ?)",
+                (rule_id, label, category or "自定义", severity, pattern, now, now),
+            )
+            self._conn.commit()
+        return self.get_sensitivity_rule(rule_id) or {}
+
+    def set_sensitivity_rule_enabled(self, rule_id: str, enabled: bool) -> dict:
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE sensitivity_rules SET enabled=?, updated_at=? WHERE rule_id=?",
+                (1 if enabled else 0, _now(), rule_id),
+            )
+            self._conn.commit()
+        if cur.rowcount == 0:
+            raise LookupError("规则不存在")
+        return self.get_sensitivity_rule(rule_id) or {}
+
+    def delete_custom_sensitivity_rule(self, rule_id: str) -> None:
+        rule = self.get_sensitivity_rule(rule_id)
+        if rule is None:
+            raise LookupError("规则不存在")
+        if rule["source"] != "custom":
+            raise ValueError("内置敏感词不可删除，只能屏蔽")
+        with self._lock:
+            self._conn.execute("DELETE FROM sensitivity_rules WHERE rule_id=?", (rule_id,))
+            self._conn.commit()
+
+    def set_mount_sensitivity_ignored(self, mount_id: int, ignored: bool) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE mounts SET sensitivity_ignored=? WHERE mount_id=?",
+                (1 if ignored else 0, int(mount_id)),
+            )
+            self._conn.commit()
+
+    def set_group_sensitivity_ignored(self, group_id: int, ignored: bool) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE groups SET sensitivity_ignored=? WHERE group_id=?",
+                (1 if ignored else 0, int(group_id)),
+            )
+            self._conn.commit()
+
+    def get_doc_sensitivity(self, doc_id: int) -> Optional[dict]:
+        rows = self.query("SELECT * FROM doc_sensitivity WHERE doc_id=?", (doc_id,))
+        return dict(rows[0]) if rows else None
+
+    def set_doc_sensitivity_hits(self, doc_id: int, hit_signature: str, hits: list[dict]) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM sensitivity_hits WHERE doc_id=?", (doc_id,))
+            self._conn.executemany(
+                "INSERT INTO sensitivity_hits(doc_id, rule_id, count, excerpt, severity) "
+                "VALUES(?,?,?,?,?)",
+                [
+                    (doc_id, h["rule_id"], int(h["count"]), h.get("excerpt", ""), h.get("severity", "medium"))
+                    for h in hits
+                ],
+            )
+            self._conn.execute(
+                "INSERT INTO doc_sensitivity(doc_id, hit_signature, ack_signature, ignored, scanned_at) "
+                "VALUES(?,?, '', 0, ?) ON CONFLICT(doc_id) DO UPDATE SET "
+                "hit_signature=excluded.hit_signature, scanned_at=excluded.scanned_at",
+                (doc_id, hit_signature, _now()),
+            )
+            self._conn.commit()
+
+    def ack_doc_sensitivity(self, doc_id: int, signature: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO doc_sensitivity(doc_id, hit_signature, ack_signature, ignored, scanned_at) "
+                "VALUES(?, '', ?, 0, ?) ON CONFLICT(doc_id) DO UPDATE SET ack_signature=excluded.ack_signature",
+                (doc_id, signature, _now()),
+            )
+            self._conn.commit()
+
+    def set_doc_sensitivity_ignored(self, doc_id: int, ignored: bool) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO doc_sensitivity(doc_id, hit_signature, ack_signature, ignored, scanned_at) "
+                "VALUES(?, '', '', ?, NULL) ON CONFLICT(doc_id) DO UPDATE SET ignored=excluded.ignored",
+                (doc_id, 1 if ignored else 0),
+            )
+            self._conn.commit()
+
+    def sensitivity_hits_for_doc(self, doc_id: int) -> list[dict]:
+        rows = self.query(
+            "SELECT h.rule_id, h.count, h.excerpt, h.severity, r.label, r.category, "
+            "r.source, r.kind, r.scope FROM sensitivity_hits h "
+            "JOIN sensitivity_rules r ON r.rule_id=h.rule_id WHERE h.doc_id=? "
+            "ORDER BY CASE h.severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, h.count DESC",
+            (doc_id,),
+        )
+        return [dict(r) for r in rows]
+
+    def sensitivity_hits_for_docs(self, doc_ids: list[int]) -> dict[int, list[dict]]:
+        if not doc_ids:
+            return {}
+        marks = ",".join("?" for _ in doc_ids)
+        rows = self.query(
+            "SELECT h.doc_id, h.rule_id, h.count, h.excerpt, h.severity, r.label, r.category "
+            "FROM sensitivity_hits h JOIN sensitivity_rules r ON r.rule_id=h.rule_id "
+            "WHERE h.doc_id IN (" + marks + ") ORDER BY h.doc_id, h.severity, h.count DESC",
+            doc_ids,
+        )
+        out: dict[int, list[dict]] = {}
+        for r in rows:
+            out.setdefault(int(r["doc_id"]), []).append(dict(r))
+        return out
+
+    def sensitivity_doc_rule_ignores(self, doc_id: int) -> set[str]:
+        rows = self.query("SELECT rule_id FROM sensitivity_doc_rule_ignores WHERE doc_id=?", (doc_id,))
+        return {str(r["rule_id"]) for r in rows}
+
+    def add_doc_sensitivity_rule_ignore(self, doc_id: int, rule_id: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO sensitivity_doc_rule_ignores(doc_id, rule_id) VALUES(?,?)",
+                (doc_id, rule_id),
+            )
+            self._conn.commit()
+
+    def remove_doc_sensitivity_rule_ignore(self, doc_id: int, rule_id: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM sensitivity_doc_rule_ignores WHERE doc_id=? AND rule_id=?",
+                (doc_id, rule_id),
+            )
             self._conn.commit()
 
     def list_docs(

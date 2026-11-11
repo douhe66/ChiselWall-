@@ -239,6 +239,41 @@ class ApiTest(unittest.TestCase):
         self.assertGreaterEqual(len(r3.json()), 5)
         self.assertFalse(any("corrupt.docx" in d["rel_path"] for d in r3.json()))  # 失败在另一个列表
 
+    def test_sensitivity_endpoints(self) -> None:
+        r = self.client.get("/api/sensitivity/summary", headers=H)
+        self.assertEqual(r.status_code, 200)
+        self.assertGreater(r.json()["rules"], 0)
+        r = self.client.get("/api/sensitivity/rules", headers=H)
+        self.assertEqual(r.status_code, 200)
+        self.assertGreater(len(r.json()["rules"]), 0)
+        r = self.client.get("/api/docs", headers=H)
+        self.assertIn("sensitivity_pending", r.json()[0])
+        custom = self.client.post("/api/sensitivity/rules", json={"label": "测试敏感词", "pattern": "凿壁测试词条"}, headers=H)
+        self.assertEqual(custom.status_code, 200)
+        rid = custom.json()["rule_id"]
+        self.assertEqual(self.client.delete("/api/sensitivity/rules/" + rid, headers=H).status_code, 200)
+        self.assertEqual(self.client.delete("/api/sensitivity/rules/builtin.biz.compensation", headers=H).status_code, 400)
+        self.assertEqual(self.client.patch("/api/mounts/" + str(self.mount_id), json={"sensitivity_ignored": True}, headers=H).status_code, 200)
+        self.assertEqual(self.client.patch("/api/mounts/" + str(self.mount_id), json={"sensitivity_ignored": False}, headers=H).status_code, 200)
+        g = self.client.post("/api/groups", json={"name": "敏感测试组"}, headers=H).json()
+        self.assertEqual(self.client.patch("/api/groups/" + str(g["group_id"]), json={"sensitivity_ignored": True}, headers=H).status_code, 200)
+        self.client.delete("/api/groups/" + str(g["group_id"]), headers=H)
+
+    def test_sensitivity_new_doc_auto_scan(self) -> None:
+        path = self.root / "new-sensitive.md"
+        path.write_text("# 新笔记\n\n合同金额 123 万，联系电话 13800138000\n", encoding="utf-8")
+        self.agent.indexer.index_file(self.mount_id, self.agent.connector_of(self.mount_id), "new-sensitive.md")
+        docs = self.client.get("/api/docs", headers=H).json()
+        doc = next(d for d in docs if d["rel_path"] == "new-sensitive.md")
+        self.assertTrue(doc["sensitivity_pending"])
+        self.assertGreaterEqual(doc["sensitivity_hit_count"], 1)
+        detail = self.client.get("/api/sensitivity/docs/" + str(doc["doc_id"]), headers=H)
+        self.assertEqual(detail.status_code, 200)
+        self.assertTrue(detail.json()["pending"])
+        ack = self.client.post("/api/sensitivity/docs/" + str(doc["doc_id"]) + "/ack", headers=H)
+        self.assertEqual(ack.status_code, 200)
+        self.assertFalse(ack.json()["pending"])
+
     def test_static_ui_served(self) -> None:
         # M2-FIX5：首页注入版本（?v= 缓存破坏 + 页脚版本号）+ no-cache 响应头
         r = self.client.get("/")

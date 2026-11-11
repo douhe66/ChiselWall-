@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>凿壁 ChiselWall · 知识工作台</title>
   <meta name="theme-color" content="#070a10">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg?v=__CHISEL_VERSION__">
   <script>try{document.documentElement.dataset.theme=localStorage.getItem("chisel_theme")||"dark";}catch(e){document.documentElement.dataset.theme="dark";}</script>
   <!-- __CHISEL_VERSION__ 由服务端注入：?v= 破坏浏览器旧缓存（M2-FIX5） -->
   <link rel="stylesheet" href="style.css?v=__CHISEL_VERSION__">
@@ -30,6 +31,7 @@
       <button class="nav-item" :class="{ active: page === 'notes' }" title="随手记" @click="switchPage('notes')">
         <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M5 4.5h11.5A2.5 2.5 0 0 1 19 7v12.5H7.5A2.5 2.5 0 0 1 5 17V4.5Z" stroke="currentColor" stroke-width="1.7"/><path d="M8.5 8h6M8.5 11.5h6M8.5 15h4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></span>
         <span class="nav-text">随手记</span>
+        <span v-if="sensitivity.pending_docs" class="nav-dot" title="有待确认的共享前检查" aria-label="有待确认的共享前检查"></span>
       </button>
       <button class="nav-item" :class="{ active: page === 'ask' }" title="随手问" @click="switchPage('ask')">
         <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M20.5 11.5a7.5 7.5 0 0 1-8 7.5H5l2.1-2.6A7.5 7.5 0 1 1 20.5 11.5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M8.5 11h.01M12 11h.01M15.5 11h.01" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg></span>
@@ -58,7 +60,7 @@
     <header class="page-head">
       <div class="page-title">
         <div class="eyebrow"><span class="eyebrow-dot"></span> LOCAL KNOWLEDGE / 本机知识库</div>
-        <h1>随手记</h1>
+        <h1>随手记 <span v-if="sensitivity.pending_docs" class="sensitivity-tiny-dot" title="有待确认的共享前检查"></span></h1>
         <p>挂载你的笔记，分享给他人。你的文件始终留在原处，不改变你的笔记记录习惯。</p>
       </div>
       <div class="page-actions">
@@ -66,6 +68,15 @@
         <button class="btn ghost" @click="reindex"><svg viewBox="0 0 24 24" fill="none" class="btn-icon"><path d="M20 11a8 8 0 1 0-2.3 6.3M20 5v6h-6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>重建索引</button>
       </div>
     </header>
+
+    <div v-if="sensitivity.pending_docs" class="sensitivity-bar" role="status">
+      <span class="sensitivity-tiny-dot"></span>
+      <div class="sensitivity-bar-text">
+        <strong>共享前检查</strong>
+        <span>{{ sensitivity.pending_docs }} 篇待确认 · {{ sensitivity.hit_count }} 处命中<span v-if="sensitivity.high_docs"> · {{ sensitivity.high_docs }} 篇高置信</span></span>
+      </div>
+      <button class="btn small" @click="openSensitivityReview">查看</button>
+    </div>
 
     <div class="stat-strip" aria-label="索引进度统计">
       <div class="stat-card"><span class="stat-label">已索引</span><strong class="stat-value">{{ stats.indexed }}</strong><span class="stat-meta">篇文档</span></div>
@@ -81,11 +92,6 @@
       <kbd class="search-kbd">Enter</kbd>
       <button class="btn primary" @click="doSearch" :disabled="busy">{{ busy ? '搜索中…' : '搜索' }}</button>
     </section>
-    <div v-if="!privacyNoticeClosed" class="privacy-note">
-      <div class="privacy-note-icon">!</div>
-      <div class="privacy-note-text"><strong>共享前请确认</strong><span>笔记可能包含敏感内容。请在右侧文档列表把单篇设为「仅本机」或「隐藏」；预览、定位和打开仍可正常使用。</span></div>
-      <button class="btn small" @click="dismissPrivacyNotice">知道了</button>
-    </div>
     <section class="results" v-if="searched">
       <div class="results-head">
         <div class="muted small">{{ hits.length ? '命中 ' + hits.length + ' 条（topk）' : '没有命中，试试换关键词' }}</div>
@@ -147,9 +153,10 @@
             <span class="group-name">全部笔记</span>
             <span class="group-count">{{ stats.indexed }}</span>
           </div>
-          <div v-for="g in groups" :key="g.group_id" class="group-item" :class="{ active: docsFilter.groupId === g.group_id }" @click="selectGroup(g)">
+          <div v-for="g in groups" :key="g.group_id" class="group-item" :class="{ active: docsFilter.groupId === g.group_id }" @click="selectGroup(g)" @contextmenu.prevent="openScopeMenu($event, 'group', g)">
             <span class="group-ico">#</span>
             <span class="group-name">{{ g.name }}</span>
+            <span v-if="g.sensitivity_ignored" class="badge">忽略提醒</span>
             <span class="group-count">{{ g.docs }}</span>
           </div>
           <div v-if="!groups.length" class="empty-inline">还没有分组，建组后把挂载或文档归入。</div>
@@ -158,6 +165,7 @@
           <div class="group-detail-head">
             <strong>{{ activeGroup.name }}</strong>
             <div class="group-detail-actions">
+              <button class="btn small" @click="toggleScopeIgnore('group', activeGroup)">{{ activeGroup.sensitivity_ignored ? '恢复提醒' : '忽略提醒' }}</button>
               <button class="btn small danger" @click="excludeGroup(activeGroup)">整组排除</button>
               <button class="btn small danger" @click="removeGroup(activeGroup)">删组</button>
             </div>
@@ -200,16 +208,18 @@
         </div>
         <p class="muted small" v-if="activeGroup">当前分组：{{ activeGroup.name }} · 只显示该分组内的挂载</p>
         <div class="mount-list">
-          <article class="mount-item" :class="{ paused: m.enabled === false }" v-for="m in visibleMounts()" :key="m.mount_id">
+          <article class="mount-item" :class="{ paused: m.enabled === false }" v-for="m in visibleMounts()" :key="m.mount_id" @contextmenu.prevent="openScopeMenu($event, 'mount', m)">
             <div class="mount-top">
               <span class="badge kind">{{ kindLabel(m.kind) }}</span>
               <strong>{{ m.path }}</strong>
               <span class="mount-count">{{ m.docs }} 篇</span>
               <span v-if="m.enabled === false" class="badge">已暂停</span>
+              <span v-if="m.sensitivity_ignored" class="badge">忽略提醒</span>
             </div>
             <div class="mount-actions">
               <button class="btn small" @click="filterMount(m)">{{ docsFilter.mountId === m.mount_id ? '取消筛选' : '筛选文档' }}</button>
               <button class="btn small" @click="toggleMount(m)">{{ m.enabled === false ? '启用' : '暂停' }}</button>
+              <button class="btn small" @click="toggleScopeIgnore('mount', m)">{{ m.sensitivity_ignored ? '恢复提醒' : '忽略提醒' }}</button>
               <button class="btn small danger" @click="removeMount(m.mount_id)">移除</button>
             </div>
           </article>
@@ -234,10 +244,11 @@
           </select>
         </div>
         <div class="doc-scroll">
-          <article class="doc-item" :class="{ 'doc-muted': (d.share_state || 'shared') !== 'shared' }" v-for="d in docs.slice(0, 200)" :key="d.doc_id">
+          <article class="doc-item" :class="{ 'doc-muted': (d.share_state || 'shared') !== 'shared' }" v-for="d in docs.slice(0, 500)" :key="d.doc_id">
             <div class="doc-main">
               <span class="badge">{{ d.format }}</span>
               <span class="badge status" :class="'st-' + d.status">{{ statusLabel(d.status) }}</span>
+              <span v-if="d.sensitivity_pending" class="sensitivity-pindot" :title="d.sensitivity_hit_count + ' 个敏感词待确认'" aria-label="敏感词待确认" @click.stop="openSensitivityDoc(d)"></span>
               <strong>{{ d.title }}</strong>
               <span class="doc-path">{{ d.rel_path }}</span>
               <div class="doc-actions">
@@ -485,6 +496,7 @@
         <a href="#set-vector">语义搜索</a>
         <a href="#set-rerank">重排 rerank</a>
         <a href="#set-query">查询智能改写</a>
+        <a href="#set-sensitivity">敏感词检查</a>
         <a href="#set-limits">限流与预算</a>
       </nav>
       <section class="panels">
@@ -682,10 +694,114 @@
           <span class="muted small">修改后保存即生效；下一次改写使用新提示词。</span>
         </div>
       </div>
+      <div class="panel wide" id="set-sensitivity">
+        <h3>敏感词检查 <span class="badge">L0+L1</span></h3>
+        <p class="muted small">发送到共享前检查：内置规则 + 自定义词，只在本机扫描，不上传 relay。内置规则不可删除，只能屏蔽；屏蔽 = 不再触发提醒，不会删除笔记内容。</p>
+        <div class="sensitivity-add-row">
+          <input v-model="sensitivityRuleForm.pattern" placeholder="自定义敏感词，如 项目代号、客户名">
+          <input v-model="sensitivityRuleForm.label" placeholder="名称（可选）">
+          <select v-model="sensitivityRuleForm.severity">
+            <option value="high">高置信</option>
+            <option value="medium">中置信</option>
+            <option value="low">低置信（不亮红点）</option>
+          </select>
+          <button class="btn primary" @click="addSensitivityRule" :disabled="sensitivitySaving">{{ sensitivitySaving ? '添加中…' : '添加' }}</button>
+        </div>
+        <div class="sensitivity-rule-toolbar">
+          <span class="muted small">共 {{ sensitivityRules.length }} 条 · 启用 {{ sensitivity.enabled_rules }} 条 · 自定义 {{ sensitivity.custom_rules }} 条</span>
+          <button class="btn small" @click="rescanSensitivity">重新检查全部笔记</button>
+        </div>
+        <div class="sensitivity-rule-list">
+          <div v-for="r in sensitivityRules" :key="r.rule_id" class="sensitivity-rule-row" :class="{ disabled: !r.enabled }">
+            <label class="sensitivity-rule-check">
+              <input type="checkbox" :checked="!!r.enabled" @change="toggleSensitivityRule(r)">
+              <span class="sensitivity-rule-name">{{ r.label }}</span>
+            </label>
+            <span class="badge" :class="r.source === 'builtin' ? 'kind' : ''">{{ r.source === 'builtin' ? '内置' : '自定义' }}</span>
+            <span class="badge">{{ r.category || '未分类' }}</span>
+            <span class="sensitivity-sev" :class="r.severity">{{ severityLabel(r.severity) }}</span>
+            <span class="sensitivity-rule-pattern" :title="r.pattern">{{ r.pattern }}</span>
+            <button v-if="r.source === 'custom'" class="btn small danger" @click="deleteSensitivityRule(r)">删除</button>
+            <span v-else class="muted small">不可删除</span>
+          </div>
+        </div>
+        <p class="muted small">低置信规则只进入详情，不亮红点；扫描结果按文档缓存，新增/修改笔记会自动重扫。</p>
+      </div>
       <div class="panel" id="set-limits"><h3>限流参数</h3><p class="muted small">每来源 1 问/5s、查询预算 800ms、top-k=8 —— M4 随广播问答生效。</p></div>
       </section>
     </section>
   </main>
+
+  <!-- 敏感词检查抽屉 -->
+  <div v-if="sensitivityReviewOpen" class="sensitivity-backdrop" @click.self="closeSensitivityDrawer"></div>
+  <aside v-if="sensitivityReviewOpen" class="sensitivity-drawer" aria-label="共享前检查">
+    <header class="sensitivity-drawer-head">
+      <div>
+        <div class="eyebrow">SHARING CHECK / 本地检查</div>
+        <h3>{{ sensitivityDetail ? '敏感词详情' : '共享前检查' }}</h3>
+      </div>
+      <button class="btn small" @click="closeSensitivityDrawer">关闭</button>
+    </header>
+
+    <div class="sensitivity-guidance"><strong>共享前请确认</strong><span>笔记可能包含敏感内容；可在文档列表把单篇设为「仅本机」或「隐藏」，预览、定位和打开仍可正常使用。</span></div>
+
+    <template v-if="sensitivityDetail">
+      <div class="sensitivity-doc-title">
+        <strong>{{ sensitivityDetail.title || sensitivityDetail.rel_path }}</strong>
+        <span class="badge">{{ shareLabel(sensitivityDetail.share_state) }}</span>
+        <span v-if="sensitivityDetail.pending" class="sensitivity-status pending">待确认</span>
+        <span v-else class="sensitivity-status">已处理</span>
+      </div>
+      <p class="muted small">{{ sensitivityDetail.rel_path }}</p>
+      <div v-if="sensitivityDetail.scope_ignored" class="sensitivity-hint">该挂载/分组已忽略敏感词提醒。</div>
+      <div v-else-if="sensitivityDetail.doc_ignored" class="sensitivity-hint">这篇笔记已设为不再提醒，可在下方恢复。</div>
+
+      <div v-if="!(sensitivityDetail.hits || []).length" class="empty-inline">没有命中当前启用的规则。</div>
+      <div v-for="h in (sensitivityDetail.hits || [])" :key="h.rule_id" class="sensitivity-hit">
+        <div class="sensitivity-hit-head">
+          <span class="sensitivity-sev" :class="h.severity">{{ severityLabel(h.severity) }}</span>
+          <strong>{{ h.label }}</strong>
+          <span class="muted small">{{ h.category }} · {{ h.count }} 处</span>
+          <button class="btn small" @click="ignoreSensitivityHit(h)">忽略此词</button>
+        </div>
+        <p class="sensitivity-excerpt">{{ h.excerpt }}</p>
+      </div>
+
+      <div class="sensitivity-actions">
+        <button v-if="sensitivityDetail.pending" class="btn primary" @click="ackSensitivityDoc">我已知晓，继续共享</button>
+        <button class="btn" @click="setSensitivityDocPrivate">设为仅本机</button>
+        <button class="btn" @click="ignoreSensitivityDoc">{{ sensitivityDetail.doc_ignored ? '恢复本笔记提醒' : '本笔记不再提醒' }}</button>
+      </div>
+    </template>
+
+    <template v-else>
+      <p class="muted small">只统计当前处于「共享」状态的笔记；仅本机/隐藏不会亮红点。低置信规则不会亮红点，可在详情中查看。</p>
+      <div class="sensitivity-list">
+        <button v-for="d in sensitivityPending" :key="d.doc_id" class="sensitivity-list-item" @click="openSensitivityDoc(d)">
+          <span class="sensitivity-list-main">
+            <strong>{{ d.title || d.rel_path }}</strong>
+            <span class="muted small">{{ d.rel_path }}</span>
+          </span>
+          <span class="sensitivity-list-meta">
+            <span v-if="d.high_count" class="sensitivity-sev high">高置信</span>
+            <span class="badge">{{ d.hit_count }} 处</span>
+          </span>
+        </button>
+        <div v-if="!sensitivityPending.length" class="empty-inline">没有待确认的敏感词。可以关掉这个面板。</div>
+      </div>
+      <div class="sensitivity-actions">
+        <button class="btn small" @click="rescanSensitivity">重新检查</button>
+        <span class="muted small">规则变更后会在后台重扫；这里会随结果刷新。</span>
+      </div>
+    </template>
+  </aside>
+
+  <!-- 分组/挂载右键菜单 -->
+  <div v-if="scopeMenu.open" class="scope-menu" :style="{ left: scopeMenu.x + 'px', top: scopeMenu.y + 'px' }" @click.stop>
+    <div class="scope-menu-title">{{ scopeMenu.name }}</div>
+    <button @click="toggleMenuScope">{{ scopeMenu.ignored ? '恢复敏感词提醒' : '忽略敏感词提醒' }}</button>
+    <div class="scope-menu-note">忽略期间跳过扫描；恢复时补扫。不删除任何笔记。</div>
+  </div>
 
   <!-- 操作结果 toast（M2-FIX3） -->
   <div class="toast" :class="[toast.tone, { show: toast.visible }]">{{ toast.text }}</div>

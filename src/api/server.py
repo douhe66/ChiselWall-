@@ -59,7 +59,7 @@ def _sse_response(events):
 #   - 页脚版本展示
 #   - /api/health 的 version 字段
 # 任何 UI 改动必须 bump 此值，否则用户浏览器仍可能命中旧缓存。
-APP_VERSION = "0.9.15"
+APP_VERSION = "0.9.22"
 
 # 健康检查路径：公开（不含知识内容）
 PUBLIC_PATHS = {"/api/health", "/"}
@@ -71,11 +71,35 @@ class MountIn(BaseModel):
 
 
 class MountPatchIn(BaseModel):
-    enabled: bool
+    enabled: Optional[bool] = None
+    sensitivity_ignored: Optional[bool] = None
+
+
+class GroupPatchIn(BaseModel):
+    sensitivity_ignored: Optional[bool] = None
 
 
 class DocShareIn(BaseModel):
     state: str
+
+
+class SensitivityRuleIn(BaseModel):
+    label: str
+    pattern: str
+    category: str = ""
+    severity: str = "medium"
+
+
+class SensitivityRulePatchIn(BaseModel):
+    enabled: bool
+
+
+class SensitivityIgnoreIn(BaseModel):
+    ignored: bool
+
+
+class SensitivityDocRuleIgnoreIn(BaseModel):
+    rule_id: str
 
 
 class RuleIn(BaseModel):
@@ -261,7 +285,7 @@ def create_app(agent, token: str = "") -> FastAPI:
             n = agent.db.query(
                 "SELECT COUNT(*) AS n FROM docs WHERE mount_id=?", (m.mount_id,)
             )[0]["n"]
-            out.append({"mount_id": m.mount_id, "kind": m.kind, "path": m.path, "docs": n, "enabled": bool(m.enabled)})
+            out.append({"mount_id": m.mount_id, "kind": m.kind, "path": m.path, "docs": n, "enabled": bool(m.enabled), "sensitivity_ignored": bool(m.sensitivity_ignored)})
         return out
 
     @app.post("/api/mounts", dependencies=[Depends(require_token)])
@@ -274,7 +298,15 @@ def create_app(agent, token: str = "") -> FastAPI:
     @app.patch("/api/mounts/{mount_id}", dependencies=[Depends(require_token)])
     def patch_mount(mount_id: int, body: MountPatchIn) -> dict:
         try:
-            return agent.set_mount_enabled(mount_id, body.enabled)
+            result: dict = {"ok": True, "mount_id": mount_id}
+            if body.enabled is not None:
+                result.update(agent.set_mount_enabled(mount_id, body.enabled))
+            if body.sensitivity_ignored is not None:
+                agent.sensitivity.set_mount_ignored(mount_id, body.sensitivity_ignored)
+                result["sensitivity_ignored"] = bool(body.sensitivity_ignored)
+            if body.enabled is None and body.sensitivity_ignored is None:
+                raise HTTPException(status_code=400, detail="没有要更新的字段")
+            return result
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc))
 
@@ -371,6 +403,16 @@ def create_app(agent, token: str = "") -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
 
+    @app.patch("/api/groups/{group_id}", dependencies=[Depends(require_token)])
+    def patch_group(group_id: int, body: GroupPatchIn) -> dict:
+        try:
+            if body.sensitivity_ignored is None:
+                raise HTTPException(status_code=400, detail="没有要更新的字段")
+            agent.sensitivity.set_group_ignored(group_id, body.sensitivity_ignored)
+            return {"ok": True, "group_id": group_id, "sensitivity_ignored": bool(body.sensitivity_ignored)}
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+
     @app.delete("/api/groups/{group_id}", dependencies=[Depends(require_token)])
     def remove_group(group_id: int) -> dict:
         try:
@@ -403,6 +445,79 @@ def create_app(agent, token: str = "") -> FastAPI:
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc))
 
+    # ---- 敏感词检查（L0+L1） ----
+    @app.get("/api/sensitivity/summary", dependencies=[Depends(require_token)])
+    def sensitivity_summary() -> dict:
+        return agent.sensitivity.summary()
+
+    @app.get("/api/sensitivity/rules", dependencies=[Depends(require_token)])
+    def sensitivity_rules() -> dict:
+        return {"rules": agent.sensitivity.rules()}
+
+    @app.post("/api/sensitivity/rules", dependencies=[Depends(require_token)])
+    def add_sensitivity_rule(body: SensitivityRuleIn) -> dict:
+        try:
+            return agent.sensitivity.add_custom_rule(
+                body.label, body.pattern, body.category, body.severity
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.patch("/api/sensitivity/rules/{rule_id}", dependencies=[Depends(require_token)])
+    def patch_sensitivity_rule(rule_id: str, body: SensitivityRulePatchIn) -> dict:
+        try:
+            return agent.sensitivity.set_rule_enabled(rule_id, body.enabled)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+
+    @app.delete("/api/sensitivity/rules/{rule_id}", dependencies=[Depends(require_token)])
+    def delete_sensitivity_rule(rule_id: str) -> dict:
+        try:
+            agent.sensitivity.delete_custom_rule(rule_id)
+            return {"ok": True}
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.post("/api/sensitivity/rescan", dependencies=[Depends(require_token)])
+    def sensitivity_rescan() -> dict:
+        agent.sensitivity.rescan_async()
+        return {"ok": True, "scanning": agent.sensitivity.scanning()}
+
+    @app.get("/api/sensitivity/pending", dependencies=[Depends(require_token)])
+    def sensitivity_pending(limit: int = 100) -> dict:
+        limit = max(1, min(limit, 500))
+        return {"docs": agent.sensitivity.pending(limit=limit)}
+
+    @app.get("/api/sensitivity/docs/{doc_id}", dependencies=[Depends(require_token)])
+    def sensitivity_doc(doc_id: int) -> dict:
+        try:
+            return agent.sensitivity.doc_detail(doc_id)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+
+    @app.post("/api/sensitivity/docs/{doc_id}/ack", dependencies=[Depends(require_token)])
+    def sensitivity_ack(doc_id: int) -> dict:
+        try:
+            return agent.sensitivity.ack_doc(doc_id)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+
+    @app.patch("/api/sensitivity/docs/{doc_id}/ignore", dependencies=[Depends(require_token)])
+    def sensitivity_doc_ignore(doc_id: int, body: SensitivityIgnoreIn) -> dict:
+        try:
+            return agent.sensitivity.set_doc_ignored(doc_id, body.ignored)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+
+    @app.post("/api/sensitivity/docs/{doc_id}/ignore-rule", dependencies=[Depends(require_token)])
+    def sensitivity_doc_ignore_rule(doc_id: int, body: SensitivityDocRuleIgnoreIn) -> dict:
+        try:
+            return agent.sensitivity.ignore_rule_for_doc(doc_id, body.rule_id)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+
     # ---- 文档列表与排除明细（M3-2：观察-1 双列表） ----
     @app.get("/api/docs", dependencies=[Depends(require_token)])
     def list_docs(
@@ -412,7 +527,8 @@ def create_app(agent, token: str = "") -> FastAPI:
         limit: int = 500,
     ) -> list:
         limit = max(1, min(limit, 2000))
-        return agent.db.list_docs(status=status, limit=limit, mount_id=mount_id, group_id=group_id)
+        docs = agent.db.list_docs(status=status, limit=limit, mount_id=mount_id, group_id=group_id)
+        return agent.sensitivity.decorate_docs(docs)
 
     @app.get("/api/excluded", dependencies=[Depends(require_token)])
     def excluded_docs() -> list:

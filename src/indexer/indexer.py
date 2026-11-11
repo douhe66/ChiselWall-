@@ -53,6 +53,7 @@ class Indexer:
         self.trigram_enabled = trigram_enabled
         self.trigram_max_chars = trigram_max_chars
         self.on_indexed = on_indexed
+        self._extra_indexed_callbacks: list[Callable[[int], None]] = []
 
     # ---- 全量 ----
     def scan_mount(
@@ -204,12 +205,16 @@ class Indexer:
             trigram_max_chars=self.trigram_max_chars,
         )
         self.db.set_doc_status(doc_id, "indexed", chunk_count=n, truncated=result.truncated, error=None)
-        if self.on_indexed is not None:
+        for cb in ([self.on_indexed] if self.on_indexed is not None else []) + list(self._extra_indexed_callbacks):
             try:
-                self.on_indexed(doc_id)
+                cb(doc_id)
             except Exception:
                 logging.getLogger("chiselwall.indexer").exception("索引后回调失败 doc_id=%s", doc_id)
         return "indexed"
+
+    def add_indexed_callback(self, callback: Callable[[int], None]) -> None:
+        """追加索引完成回调（向量化、敏感词扫描等互不覆盖）。"""
+        self._extra_indexed_callbacks.append(callback)
 
     def _mark_error(self, mount_id: int, meta: DocMeta, message: str) -> None:
         self.db.upsert_doc(

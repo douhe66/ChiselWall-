@@ -93,6 +93,10 @@ class NodeAgent:
             trigram_enabled=config.trigram_enabled,
             trigram_max_chars=config.trigram_max_chars,
         )
+        from node.sensitivity_service import SensitivityService
+
+        self.sensitivity = SensitivityService(self.db)
+        self.indexer.add_indexed_callback(self.sensitivity.scan_doc)
         self.searcher = Searcher(self.db)
         # M7 向量混合检索（默认关；开启后索引与检索自动带向量）
         from ai.embedding import VectorConfigStore
@@ -392,6 +396,8 @@ class NodeAgent:
     # ---- 生命周期 ----
     def start(self) -> None:
         self.service.start_worker()
+        # L0/L1 敏感词：启动后后台巡一遍存量文档；新文档由 indexer 回调即时扫描。
+        self.sensitivity.rescan_async()
 
     # ---- Relay 配置（M6） ----
     def _relay_config_obj(self):
