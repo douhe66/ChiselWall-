@@ -37,11 +37,15 @@ def build_context(
     used = 0
     for hit in aggregated[:top_n]:
         title = str(hit.get("title") or "")[:80]
-        snippet = str(hit.get("snippet_text") or hit.get("snippet_html") or "")
+        # 远端节点会附带 ai_text（命中块及相邻块，约 1–4KB）；
+        # 老版本/本地命中没有时回退到普通 snippet。
+        snippet = str(hit.get("ai_text") or hit.get("snippet_text") or hit.get("snippet_html") or "")
         limit = snippet_chars
+        if hit.get("ai_text"):
+            limit = max(snippet_chars, min(4000, max_chars // 2))
         if hit.get("context_full"):
             limit = max(snippet_chars, min(16000, max_chars // 2))
-        if hit.get("context_full"):
+        if hit.get("context_full") or hit.get("ai_text"):
             snippet = snippet[:limit]
         else:
             snippet = " ".join(snippet.split())[:limit]
@@ -49,7 +53,8 @@ def build_context(
             continue
         nodes = ",".join(hit.get("nodes") or []) or "?"
         rel = str(hit.get("rel_path") or "")
-        block = "[%d] 《%s》（来源：%s；路径：%s）\n%s" % (len(citations) + 1, title, nodes, rel, snippet)
+        weak = "；弱相关" if str(hit.get("tier") or "strong") == "weak" else ""
+        block = "[%d] 《%s》（来源：%s；路径：%s%s）\n%s" % (len(citations) + 1, title, nodes, rel, weak, snippet)
         if used + len(block) > max_chars:
             if citations:
                 break
@@ -99,13 +104,28 @@ def stream_answer(
         yield {"type": "error", "error": "AI 未配置：请在设置页填写 base_url / model（以及 api_key）"}
         return
     context, citations = build_context(aggregated, max_chars=cfg.max_context_chars, top_n=cfg.top_n)
+    strong_n = sum(1 for h in aggregated if str(h.get("tier") or "strong") != "weak")
+    weak_n = sum(1 for h in aggregated if str(h.get("tier") or "strong") == "weak")
     started = time.monotonic()
     yield {
         "type": "start",
         "citations": citations,
         "context_chars": len(context),
+        "strong_hits": strong_n,
+        "weak_hits": weak_n,
+        "weak_only": bool(weak_n and not strong_n),
         "model": cfg.model,
     }
+    if not context:
+        text = "没有找到可用于回答的资料。可以换一个问法，或确认共享笔记的同事在线。"
+        yield {"type": "delta", "text": text}
+        yield {
+            "type": "done", "text": text, "citations": citations, "model": cfg.model,
+            "elapsed_ms": int((time.monotonic() - started) * 1000),
+            "context_chars": 0, "strong_hits": strong_n, "weak_hits": weak_n,
+            "weak_only": bool(weak_n and not strong_n),
+        }
+        return
     text_parts: list[str] = []
     client = LLMClient(cfg)
     messages = build_messages(question, context, cfg.system_prompt, history=history)
@@ -133,6 +153,9 @@ def stream_answer(
         "model": cfg.model,
         "elapsed_ms": int((time.monotonic() - started) * 1000),
         "context_chars": len(context),
+        "strong_hits": strong_n,
+        "weak_hits": weak_n,
+        "weak_only": bool(weak_n and not strong_n),
     }
 
 

@@ -124,6 +124,18 @@ class LocalWindowTest(unittest.TestCase):
         ctx, _ = build_context([hit], max_chars=8000)
         self.assertIn("代码块结束", ctx)
 
+    def test_remote_ai_text_is_used(self) -> None:
+        hit = dict(make_hit(1), snippet_text="很短的片段", ai_text="远端节点补充的完整上下文")
+        ctx, cites = build_context([hit], max_chars=8000)
+        self.assertIn("远端节点补充的完整上下文", ctx)
+        self.assertNotIn("很短的片段", ctx)
+        self.assertEqual(len(cites), 1)
+
+    def test_weak_hit_is_labeled(self) -> None:
+        hit = dict(make_hit(1), tier="weak")
+        ctx, _ = build_context([hit], max_chars=8000)
+        self.assertIn("弱相关", ctx)
+
 
 class RagAnswerTest(unittest.TestCase):
     def test_unconfigured(self) -> None:

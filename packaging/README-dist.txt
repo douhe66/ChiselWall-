@@ -26,7 +26,7 @@
 - 只有已加入的提问组会出现在提问面板；设置 → 提问组可查看成员。
 - 右侧结果栏可拖动调宽；结果/回答各自滚动。
 
-二·六、日志与后台守护（v0.9.23）
+二·六、日志与后台守护（v0.9.24）
 - 日志默认写入：%USERPROFILE%\.chiselwall\logs\node.log；relay 写到 relay.json 同目录 logs\relay.log；
   单文件 10MB，保留 5 个备份，同时输出到控制台。
 - Windows relay 后台守护（管理员 PowerShell，在发行包根目录）：

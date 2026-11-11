@@ -378,6 +378,7 @@
               </div>
               <div v-if="t.role === 'assistant' && t.payload" class="ask-turn-meta">
                 <span v-if="t.payload.elapsed_ms" class="muted small">AI 用时 {{ t.payload.elapsed_ms }}ms · {{ t.payload.model }}<template v-if="t.payload.context_chars"> · 上下文 {{ t.payload.context_chars }} 字</template></span>
+                <span v-if="t.payload.weak_only" class="badge route-fallback">仅弱相关结果</span>
               </div>
               <div v-if="t.role === 'assistant' && t.payload && (t.payload.citations || []).length" class="chat-citations" style="padding:6px 0 0">
                 <span class="muted small">引用（本轮）：</span>
@@ -451,10 +452,12 @@
             <div class="empty-icon"><svg viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="6.5" stroke="currentColor" stroke-width="1.7"/><path d="m16 16 4.5 4.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></div>
             <p>提问后，这里会先出现搜索结果。</p>
           </div>
+          <div v-if="askLatestHits().length && askLatestHits().every(h => h.tier === 'weak')" class="sensitivity-hint">只找到弱相关结果；AI 会基于这些片段谨慎回答，可能不完整。</div>
           <article class="hit" v-for="(h, i) in askLatestHits()" :key="i">
             <header>
               <strong>{{ h.title }}</strong>
               <span class="badge">{{ h.format }}</span>
+              <span v-if="h.tier === 'weak'" class="badge route-fallback">弱相关</span>
               <span class="badge" :class="routeClass(h.route)">{{ routeLabel(h.route) }}</span>
               <span class="badge kind" v-for="n in (h.nodes || [])" :key="n">@{{ n }}</span>
               <span class="muted small">{{ h.rel_path }}</span>

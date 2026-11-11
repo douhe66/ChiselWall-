@@ -675,10 +675,31 @@ class NodeAgent:
         from ai.rag import answer_question
 
         strong = [h for h in aggregated if str(h.get("tier") or "strong") != "weak"]
-        context_hits = strong if strong else []
-        return answer_question(
+        weak = [h for h in aggregated if str(h.get("tier") or "strong") == "weak"]
+        # 以前 weak 全丢弃，会出现“界面有 1 条结果、AI 收到空上下文”。
+        # 没有 strong 时，拿最多 8 条 weak 作上下文，并在块头标注弱相关。
+        context_hits = strong if strong else weak[:8]
+        if not context_hits:
+            log.info("AI answer context empty strong=0 weak=0")
+            return {
+                "status": "empty",
+                "answer": "没有找到可用于回答的资料。可以换一个问法，或确认共享笔记的同事在线。",
+                "citations": [], "model": self.ai_config.model,
+                "elapsed_ms": 0, "context_chars": 0,
+                "strong_hits": 0, "weak_hits": 0, "weak_fallback": False,
+            }
+        answer = answer_question(
             question, self.enrich_local_context(context_hits), self.ai_config, history=history
         )
+        answer["strong_hits"] = len(strong)
+        answer["weak_hits"] = len(weak)
+        answer["weak_fallback"] = bool(not strong and weak)
+        log.info(
+            "AI answer context strong=%s weak=%s used=%s chars=%s fallback=%s status=%s",
+            len(strong), len(weak), len(context_hits), answer.get("context_chars"),
+            answer.get("weak_fallback"), answer.get("status"),
+        )
+        return answer
 
     # ---- M8 随手问会话 ----
     def ask_session_list(self) -> list[dict]:
@@ -775,7 +796,10 @@ class NodeAgent:
             self.ask_sessions.append(sid, "assistant", str(answer.get("answer")),
                                    {"citations": answer.get("citations") or [], "status": answer.get("status"),
                                     "elapsed_ms": answer.get("elapsed_ms") or 0, "model": answer.get("model") or "",
-                                    "context_chars": answer.get("context_chars") or 0})
+                                    "context_chars": answer.get("context_chars") or 0,
+                                    "strong_hits": answer.get("strong_hits") or 0,
+                                    "weak_hits": answer.get("weak_hits") or 0,
+                                    "weak_only": bool(answer.get("weak_fallback"))})
         return {"ok": answer.get("status") == "ready", "answer": answer, "session": self.ask_sessions.get(sid),
                 "turns": self.ask_sessions.turns(sid)}
 
@@ -812,7 +836,10 @@ class NodeAgent:
             self.ask_sessions.append(sid, "assistant", str(answer.get("answer")),
                                    {"citations": answer.get("citations") or [], "status": answer.get("status"),
                                     "elapsed_ms": answer.get("elapsed_ms") or 0, "model": answer.get("model") or "",
-                                    "context_chars": answer.get("context_chars") or 0})
+                                    "context_chars": answer.get("context_chars") or 0,
+                                    "strong_hits": answer.get("strong_hits") or 0,
+                                    "weak_hits": answer.get("weak_hits") or 0,
+                                    "weak_only": bool(answer.get("weak_fallback"))})
         return {"ok": True, "answer": answer, "aggregated": aggregated, "session": self.ask_sessions.get(sid),
                 "turns": self.ask_sessions.turns(sid)}
 
@@ -850,6 +877,9 @@ class NodeAgent:
                         "elapsed_ms": ev.get("elapsed_ms") or 0,
                         "model": ev.get("model") or "",
                         "context_chars": ev.get("context_chars") or 0,
+                        "strong_hits": ev.get("strong_hits") or 0,
+                        "weak_hits": ev.get("weak_hits") or 0,
+                        "weak_only": bool(ev.get("weak_only")),
                     })
                 ev["turns"] = self.ask_sessions.turns(sid)
                 ev["session"] = self.ask_sessions.get(sid)

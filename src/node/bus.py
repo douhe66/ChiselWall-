@@ -624,7 +624,21 @@ class NodeBus:
                 log.exception("本地检索失败（查询来自 %s）", asker)
                 hits = []
             elapsed = int((time.monotonic() - started) * 1000)
-            payload_hits = [h.to_dict() for h in hits]
+            payload_hits = []
+            for h in hits:
+                d = h.to_dict()
+                try:
+                    db = getattr(self.local_searcher, "db", None) or getattr(self.searcher, "db", None)
+                    if db is not None:
+                        chunks = db.get_chunk_texts(int(h.doc_id))
+                        from ai.rag import select_local_window
+
+                        ai_text = select_local_window(chunks, int(h.chunk_seq), max_chars=4000)
+                        if ai_text:
+                            d["ai_text"] = ai_text
+                except Exception:
+                    log.exception("准备远端 AI 上下文失败 doc_id=%s", getattr(h, "doc_id", None))
+                payload_hits.append(d)
             now = time.monotonic()
             allowed = self._allowed.setdefault(asker, {})
             for h in hits:
