@@ -9,6 +9,7 @@ M2 只组装本地核心（relay/广播为 M4）。启动即：加载挂载与�
 from __future__ import annotations
 
 import argparse
+import asyncio
 import hashlib
 import json
 import logging
@@ -114,6 +115,9 @@ class NodeAgent:
         self.reranker = build_reranker(self.rerank_config)
         self._rerank_cache: OrderedDict[str, tuple[float, list[float]]] = OrderedDict()
         self._rerank_cache_lock = threading.Lock()
+        self._rerank_disabled_until = 0.0
+        self._rerank_last_error = ""
+        self._rerank_failures = 0
         self.service = WatchService(
             self.indexer,
             self.db,
@@ -289,6 +293,8 @@ class NodeAgent:
         if doc is None:
             raise LookupError("文档不存在")
         self.db.set_doc_share(doc_id, state)
+        if getattr(self, "bus", None) is not None:
+            self.bus.revoke_doc(doc_id)
         log.info("doc share changed doc_id=%s state=%s", doc_id, state)
         return {"ok": True, "doc": {"doc_id": doc.doc_id, "share_state": state}}
 
@@ -351,6 +357,8 @@ class NodeAgent:
         if self.db.get_group(group_id) is None:
             raise LookupError("分组不存在")
         self.db.remove_group(group_id)
+        if getattr(self, "bus", None) is not None:
+            self.bus.revoke_all()
 
     def add_group_member(self, group_id: int, mount_id: int, rel_path: str = "") -> dict:
         if self.db.get_group(group_id) is None:
@@ -358,11 +366,15 @@ class NodeAgent:
         if self.db.get_mount(mount_id) is None:
             raise LookupError("挂载不存在")
         member_id = self.db.add_group_member(group_id, mount_id, rel_path)
+        if getattr(self, "bus", None) is not None:
+            self.bus.revoke_all()
         log.info("group member added group=%s mount=%s rel=%s", group_id, mount_id, rel_path)
         return {"member_id": member_id, "group_id": group_id, "mount_id": mount_id, "rel_path": rel_path}
 
     def remove_group_member(self, member_id: int) -> None:
         self.db.remove_group_member(member_id)
+        if getattr(self, "bus", None) is not None:
+            self.bus.revoke_all()
 
     def exclude_group(self, group_id: int) -> dict:
         """整组批量排除（GR-07 裁决）：为每个成员生成真实排除规则记录。
@@ -375,6 +387,8 @@ class NodeAgent:
         """
         if self.db.get_group(group_id) is None:
             raise LookupError("分组不存在")
+        if getattr(self, "bus", None) is not None:
+            self.bus.revoke_all()
         created: list[dict] = []
         existing = {(k, p) for (_i, k, p) in self.db.list_exclude_rules()}
         for member in self.db.list_group_members(group_id):
@@ -735,14 +749,15 @@ class NodeAgent:
                 pending = ""
         return pairs
 
-    async def ask_session_ask(self, sid: str, text: str, groups: Optional[list] = None) -> dict:
+    async def ask_session_ask(self, sid: str, text: str, groups: Optional[list] = None,
+                              use_plan: bool = True) -> dict:
         session = self.ask_sessions.get(sid)
         if session is None:
             return {"ok": False, "error": "会话不存在"}
         question = (text or "").strip()
         if not question:
             return {"ok": False, "error": "问题不能为空"}
-        result = await self.bus.ask(question, groups)
+        result = await self.bus.ask(question, groups, use_plan=use_plan)
         qid = str(result.get("qid") or "")
         turn = self.ask_sessions.append(
             sid, "user", question,
@@ -752,15 +767,41 @@ class NodeAgent:
             self.ask_sessions.rename(sid, question[:20])
         return {"ok": True, "session_id": sid, "qid": qid, "turn_id": turn["id"], "session": self.ask_sessions.get(sid)}
 
-    async def _research_core(self, question: str, groups: list[str], hits: list[dict]) -> dict:
+    def _research_history(self, turns: list[dict]) -> list[dict]:
+        """追问上下文：即使上一轮还没有 assistant 回答，也保留用户问题。"""
+        out: list[dict] = []
+        pending = ""
+        for turn in turns:
+            if turn.get("role") == "user":
+                if pending:
+                    out.append({"question": pending, "answer": ""})
+                pending = str(turn.get("content") or "")
+            elif turn.get("role") == "assistant" and pending:
+                out.append({"question": pending, "answer": str(turn.get("content") or "")})
+                pending = ""
+        if pending:
+            out.append({"question": pending, "answer": ""})
+        return out
+
+    async def _research_core(self, question: str, groups: list[str], hits: list[dict],
+                             history: Optional[list[dict]] = None,
+                             coverage: Optional[dict] = None, plan=None) -> dict:
         from retrieval.research import ResearchAgent
         from retrieval.session import EvidenceSession
 
         research = EvidenceSession(question, groups)
+        if plan is not None:
+            research.plan_text = str(
+                getattr(plan, "expression", "") or
+                (plan.get("expression") if isinstance(plan, dict) else "") or ""
+            )
         research.add_hits(hits or [], node_fallback=self.config.relay_nick or "我")
+        if coverage:
+            research.set_coverage(coverage.get("expected") or 0, coverage.get("responded") or 0)
+        await self.retrieval.hydrate(research)
         started = time.monotonic()
         agent = ResearchAgent(self.retrieval, self.ai_config)
-        result = await agent.run(research)
+        result = await agent.run(research, history=history)
         if result.get("status") != "ready" or not result.get("answer"):
             return {"ok": False, "error": result.get("error") or "研究未完成", "research": result}
         citations = []
@@ -793,6 +834,8 @@ class NodeAgent:
             "model": self.ai_config.model,
             "context_chars": result.get("context_chars") or 0,
             "research_trace": result.get("trace") or [],
+            "coverage": result.get("coverage") or {},
+            "partial": bool((result.get("coverage") or {}).get("partial")),
             "research": True,
         })
 
@@ -816,6 +859,9 @@ class NodeAgent:
             str(target.get("content") or ""),
             payload.get("groups") or [],
             payload.get("aggregated") or [],
+            coverage={"expected": payload.get("expected") or 0,
+                      "responded": payload.get("responded") or 0},
+            plan=payload.get("plan"),
         )
         if not core.get("ok"):
             return core
@@ -825,7 +871,7 @@ class NodeAgent:
                 "session": self.ask_sessions.get(sid), "turns": self.ask_sessions.turns(sid)}
 
     async def research_followup(self, sid: str, text: str) -> dict:
-        """追问也走自主检索；成功后才写入 user/assistant 轮次，失败可安全回退旧流式追问。"""
+        """追问也走自主检索；成功后才写入 user/assistant 轮次，失败不回退旧 AI 综合。"""
         question = (text or "").strip()
         if not question:
             return {"ok": False, "error": "追问不能为空"}
@@ -842,17 +888,53 @@ class NodeAgent:
                 break
         payload = (prior or {}).get("payload") or {}
         groups = payload.get("groups") or []
-        hits = payload.get("aggregated") or []
-        core = await self._research_core(question, groups, hits)
-        if not core.get("ok"):
-            return core
-        self.ask_sessions.append(sid, "user", question, {
-            "aggregated": hits[:30], "followup": True, "groups": groups,
-        })
-        self._append_research_answer(sid, core)
-        log.info("research followup sid=%s citations=%s", sid, len(core.get("citations") or []))
-        return {"ok": True, "answer": core.get("answer"), "citations": core.get("citations") or [],
-                "session": self.ask_sessions.get(sid), "turns": self.ask_sessions.turns(sid)}
+        hits = list(payload.get("aggregated") or [])
+        history = self._research_history(turns)
+        context = "\n\n".join(
+            "问：" + str(p.get("question") or "")[:200] + "\n答：" + str(p.get("answer") or "")[:1200]
+            for p in history[-3:]
+        )
+        plan = None
+        plan_hits: list[dict] = []
+        plan_cov: dict = {}
+        if getattr(self, "rewriter", None) is not None and self.rewriter.ready:
+            try:
+                plan = await asyncio.to_thread(self.rewriter.plan, question, context)
+            except Exception:
+                log.exception("追问 QueryPlan 生成失败，回退上一轮证据")
+        if plan is not None:
+            try:
+                from retrieval.session import EvidenceSession
+                plan_session = EvidenceSession(question, groups)
+                await self.retrieval.search_plan(plan_session, plan, topk=8)
+                plan_hits = [dict(ev.raw) for ev in plan_session.evidence.values() if ev.raw]
+                plan_cov = dict(plan_session.coverage or {})
+                hits = hits + plan_hits
+            except Exception:
+                log.exception("追问 QueryPlan 首轮检索失败，继续用上一轮证据")
+        coverage = plan_cov if (plan_cov.get("expected") or 0) else {
+            "expected": payload.get("expected") or 0,
+            "responded": payload.get("responded") or 0,
+        }
+        core = await self._research_core(
+            question, groups, hits, history=history,
+            coverage=coverage, plan=plan,
+        )
+        if core.get("ok"):
+            follow_payload = {
+                "aggregated": hits[:30], "followup": True, "groups": groups,
+                "expected": coverage.get("expected") or 0,
+                "responded": coverage.get("responded") or 0,
+            }
+            if plan is not None and hasattr(plan, "to_dict"):
+                follow_payload["plan"] = plan.to_dict()
+            self.ask_sessions.append(sid, "user", question, follow_payload)
+            self._append_research_answer(sid, core)
+            log.info("research followup sid=%s citations=%s", sid, len(core.get("citations") or []))
+            return {"ok": True, "answer": core.get("answer"), "citations": core.get("citations") or [],
+                    "session": self.ask_sessions.get(sid), "turns": self.ask_sessions.turns(sid)}
+
+        return core
 
 
 
@@ -919,7 +1001,7 @@ class NodeAgent:
                  sid, fetched, failed, used, budget)
         return {"ok": True, "fetched": fetched, "failed": failed, "context_chars": used, "budget": budget}
 
-    def ask_session_complete(self, sid: str, turn_id: int, qid: str) -> dict:
+    def ask_session_complete(self, sid: str, turn_id: int, qid: str, rerank: bool = True) -> dict:
         session = self.ask_sessions.get(sid)
         if session is None:
             return {"ok": False, "error": "会话不存在"}
@@ -927,7 +1009,8 @@ class NodeAgent:
         aggregated = view.get("aggregated") or []
         if aggregated:
             aggregated = self.enrich_display(aggregated)
-            aggregated = self.rerank_hits(str(view.get("text") or ""), aggregated)
+            if rerank:
+                aggregated = self.rerank_hits(str(view.get("text") or ""), aggregated)
         turns = self.ask_sessions.turns(sid)
         payload = {
             "qid": qid,
@@ -1291,6 +1374,9 @@ class NodeAgent:
         data.update({
             "ready": bool(r is not None and getattr(r, "ready", False)),
             "name": (getattr(r, "name", "") if r is not None else ""),
+            "disabled_until": self._rerank_disabled_until,
+            "last_error": self._rerank_last_error,
+            "failures": self._rerank_failures,
         })
         return data
 
@@ -1317,12 +1403,17 @@ class NodeAgent:
             cfg.cache_size = max(0, int(data.get("cache_size")))
         self.rerank_store.save(cfg)
         self.reranker = build_reranker(cfg)
+        self._rerank_disabled_until = 0.0
+        self._rerank_last_error = ""
+        self._rerank_failures = 0
         return self.rerank_public()
 
     def rerank_hits(self, query: str, hits: list[dict]) -> list[dict]:
-        """对候选做一次精排；失败/未启用时原样返回。"""
+        """对候选做一次精排；失败/未启用/熔断时原样返回。"""
         r = self.reranker
         cfg = self.rerank_config
+        if time.monotonic() < self._rerank_disabled_until:
+            return hits
         strong = [h for h in hits if str(h.get("tier") or "strong") != "weak"]
         weak = [h for h in hits if str(h.get("tier") or "strong") == "weak"]
         if r is None or not getattr(r, "ready", False) or len(strong) < 2:
@@ -1345,11 +1436,16 @@ class NodeAgent:
         if scores is None:
             try:
                 scores = r.rerank(query, docs)
-            except Exception:
-                log.exception("rerank 失败，回退 P0 排序")
+            except Exception as exc:
+                self._rerank_failures += 1
+                self._rerank_last_error = str(exc) or exc.__class__.__name__
+                # 熔断 5 分钟：避免每次检索都重试已损坏/内存不足的模型。
+                self._rerank_disabled_until = time.monotonic() + 300.0
+                log.exception("rerank 失败，回退 P0 排序并熔断 300s")
                 return hits
             if len(scores) != n:
                 return hits
+            self._rerank_last_error = ""
             if cfg.cache_size and cfg.cache_size > 0:
                 with self._rerank_cache_lock:
                     self._rerank_cache[cache_key] = (time.monotonic(), list(scores))
@@ -1377,7 +1473,12 @@ class NodeAgent:
     # ---- 查询改写（P2） ----
     def query_public(self) -> dict:
         data = self.query_config.public_dict()
-        data.update({"ready": bool(self.rewriter.ready), "ai_ready": bool(self.ai_config.ready)})
+        data.update({
+            "ready": bool(self.rewriter.ready),
+            "ai_ready": bool(self.ai_config.ready),
+            "last_plan_status": getattr(self.rewriter, "last_status", ""),
+            "last_plan_error": getattr(self.rewriter, "last_error", ""),
+        })
         return data
 
     def save_query(self, data: dict) -> dict:
@@ -1453,13 +1554,13 @@ class NodeAgent:
 
     # ---- 检索与查看 ----
     def search(self, query: str, topk: int = 8) -> list[dict]:
-        hits = [h.to_dict() for h in self.search_local_expanded(query, topk)]
-        return self.rerank_hits(query, hits)
+        """经典搜索统一走 RetrievalKernel，避免与 AI 入口分叉。"""
+        return self.retrieval.search_ranked(query, topk)
 
-    def get_doc_text(self, doc_id: int, max_chars: int = 20000) -> str:
+    def get_doc_text(self, doc_id: int, max_chars: int = 20000, start: int = 0) -> str:
         """全文查看：仅限已索引文档；此刻再复核排除规则与文件存在（红线⑤）。"""
         doc = self._verified_doc(doc_id)
-        text = self.searcher.get_doc_text(doc_id, max_chars) or ""
+        text = self.searcher.get_doc_text(doc_id, max_chars, start) or ""
         return text
 
     def _verified_doc(self, doc_id: int) -> dict:

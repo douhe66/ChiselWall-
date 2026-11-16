@@ -28,11 +28,15 @@ class FakeKernel:
         self.fetches = []
         self.searches = []
 
-    async def fetch(self, session, evidence_id, max_chars=24000):
-        self.fetches.append((evidence_id, max_chars))
+    async def fetch(self, session, evidence_id, max_chars=24000, mode="preview", start=0):
+        self.fetches.append((evidence_id, max_chars, mode))
         ev = session.get(evidence_id)
-        ev.fetched = True
-        ev.full_text = "完整正文：香港的 IP 段是 10.0.0.0/8"
+        if mode == "full":
+            ev.fetched = True
+            ev.full_text = "完整正文：香港的 IP 段是 10.0.0.0/8"
+        else:
+            ev.previewed = True
+            ev.preview_text = "预览：香港的 IP 段是 10.0.0.0/8"
         return ev
 
     async def search(self, session, query, topk=8):
@@ -58,7 +62,7 @@ class ResearchTest(unittest.TestCase):
         kernel = FakeKernel()
         agent = ResearchAgent(kernel, cfg)
         replies = [
-            {"text": '{"action":"fetch","evidence_ids":["e1"],"reason":"片段不足"}'},
+            {"text": '{"action":"fetch","evidence_ids":["e1"],"mode":"full","max_chars":4000,"reason":"片段不足"}'},
             {"text": '{"action":"answer","text":"香港是 10.0.0.0/8","citations":["e1"]}'},
         ]
         with mock.patch("retrieval.research.LLMClient.chat", side_effect=replies):
@@ -97,6 +101,49 @@ class ResearchTest(unittest.TestCase):
         self.assertEqual(result["status"], "ready")
         self.assertIn("香港 CIDR", kernel.searches)
         self.assertEqual(result["citations"], ["e2"])
+
+    def test_final_markdown_with_citation(self):
+        session = EvidenceSession("香港 IP", ["全员组"])
+        session.add_hits([hit(1)])
+        cfg = AIConfig(enabled=True, base_url="http://x", model="m")
+        agent = ResearchAgent(FakeKernel(), cfg)
+        reply = "FINAL:\n## 结论\n香港是 10.0.0.0/8 [e1]"
+        with mock.patch("retrieval.research.LLMClient.chat", return_value={"text": reply}):
+            result = asyncio.run(agent.run(session))
+        self.assertEqual(result["status"], "ready")
+        self.assertEqual(result["citations"], ["e1"])
+        self.assertIn("## 结论", result["answer"])
+
+    def test_invalid_json_repair(self):
+        session = EvidenceSession("香港 IP", ["全员组"])
+        session.add_hits([hit(1)])
+        cfg = AIConfig(enabled=True, base_url="http://x", model="m")
+        agent = ResearchAgent(FakeKernel(), cfg)
+        replies = [
+            {"text": "这不是 JSON"},
+            {"text": '{"action":"answer","text":"修复后回答","citations":["e1"]}'},
+        ]
+        with mock.patch("retrieval.research.LLMClient.chat", side_effect=replies):
+            result = asyncio.run(agent.run(session))
+        self.assertEqual(result["status"], "ready")
+        self.assertEqual(result["answer"], "修复后回答")
+
+    def test_force_answer_after_useless_search(self):
+        session = EvidenceSession("Windows 文件锁", ["全员组"])
+        session.add_hits([hit(1)])
+        cfg = AIConfig(enabled=True, base_url="http://x", model="m")
+        kernel = FakeKernel()
+        agent = ResearchAgent(kernel, cfg)
+        replies = [
+            {"text": '{"action":"search","query":"Windows LockFileEx"}'},
+            {"text": '{"action":"search","query":"Windows 文件锁 API"}'},
+            {"text": '{"action":"answer","text":"资料没有 Windows 内容","citations":["e1"]}'},
+        ]
+        with mock.patch("retrieval.research.LLMClient.chat", side_effect=replies):
+            result = asyncio.run(agent.run(session))
+        self.assertEqual(result["status"], "ready")
+        self.assertTrue(result.get("forced"))
+        self.assertEqual(result["citations"], ["e1"])
 
     def test_unconfigured(self):
         session = EvidenceSession("q")

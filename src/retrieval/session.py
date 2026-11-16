@@ -20,9 +20,47 @@ class Evidence:
     match_fields: list[str] = field(default_factory=list)
     sources: list[dict] = field(default_factory=list)
     full_text: str = ""
+    preview_text: str = ""
+    total_chars: int = 0
+    read_chars: int = 0
+    read_mode: str = ""
+    chunk_seq: int = 0
+    char_start: int = 0
+    read_start: int = 0
+    read_end: int = 0
+    next_offset: int = 0
+    has_more: bool = False
+    version_changed: bool = False
+    content_hash: str = ""
+    mtime: float = 0.0
+    size: int = 0
     truncated: bool = False
     fetched: bool = False
+    previewed: bool = False
+    segments: list[dict] = field(default_factory=list)
     raw: dict = field(default_factory=dict)
+
+    def body(self, limit: int = 0) -> str:
+        if self.segments:
+            parts = []
+            used = 0
+            for seg in sorted(self.segments, key=lambda x: int(x.get("start") or 0)):
+                text = str(seg.get("text") or "")
+                if not text:
+                    continue
+                head = "[%s:%s]\n" % (seg.get("start"), seg.get("end"))
+                take = text
+                if limit > 0:
+                    left = limit - used - len(head)
+                    if left <= 0:
+                        break
+                    take = text[:left]
+                parts.append(head + take)
+                used += len(head) + len(take)
+            if parts:
+                return "\n".join(parts)
+        text = self.full_text or self.preview_text or self.snippet or ""
+        return text[:limit] if limit > 0 else text
 
     def card(self) -> dict:
         return {
@@ -36,7 +74,22 @@ class Evidence:
             "match_fields": list(self.match_fields),
             "snippet": self.snippet,
             "fetched": self.fetched,
-            "chars": len(self.full_text or self.snippet or ""),
+            "previewed": self.previewed,
+            "total_chars": int(self.total_chars or 0),
+            "read_chars": int(self.read_chars or 0),
+            "read_mode": self.read_mode,
+            "chunk_seq": int(self.chunk_seq or 0),
+            "char_start": int(self.char_start or 0),
+            "read_start": int(self.read_start or 0),
+            "read_end": int(self.read_end or 0),
+            "next_offset": int(self.next_offset or 0),
+            "has_more": self.has_more,
+            "version_changed": self.version_changed,
+            "content_hash": (self.content_hash or "")[:12],
+            "read_ranges": [[int(s.get("start") or 0), int(s.get("end") or 0)]
+                            for s in self.segments],
+            "truncated": self.truncated,
+            "chars": len(self.full_text or self.preview_text or self.snippet or ""),
         }
 
 
@@ -49,6 +102,8 @@ class EvidenceSession:
         self.groups = list(groups or [])
         self.evidence: dict[str, Evidence] = {}
         self.queries: list[str] = []
+        self.coverage: dict = {"expected": 0, "responded": 0, "partial": False}
+        self.plan_text: str = ""
         self._counter = 0
         self._keys: dict[tuple, str] = {}
 
@@ -85,6 +140,12 @@ class EvidenceSession:
                 tier=str(hit.get("tier") or "strong"),
                 score=float(hit.get("score") or 0.0),
                 snippet=str(hit.get("snippet_text") or hit.get("snippet_html") or ""),
+                total_chars=int(hit.get("total_chars") or 0),
+                chunk_seq=int(hit.get("chunk_seq") or 0),
+                char_start=int(hit.get("char_start") or 0),
+                content_hash=str(hit.get("content_hash") or ""),
+                mtime=float(hit.get("mtime") or 0.0),
+                size=int(hit.get("size") or 0),
                 match_fields=list(hit.get("match_fields") or []),
                 sources=sources,
                 raw=hit,
@@ -105,6 +166,16 @@ class EvidenceSession:
 
     def fetched_ids(self) -> list[str]:
         return [e.evidence_id for e in self.evidence.values() if e.fetched]
+
+    def set_coverage(self, expected: int, responded: int) -> None:
+        expected = max(0, int(expected or 0))
+        responded = max(0, int(responded or 0))
+        if expected:
+            self.coverage = {
+                "expected": expected,
+                "responded": responded,
+                "partial": responded < expected,
+            }
 
     def add_query(self, query: str) -> bool:
         q = (query or "").strip()

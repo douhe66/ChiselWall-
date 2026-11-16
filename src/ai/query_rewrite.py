@@ -243,45 +243,71 @@ class QueryRewriter:
         self._plan_cache: OrderedDict[str, tuple[float, Optional[QueryPlan]]] = OrderedDict()
         self._lock = threading.Lock()
         self.last_raw = ""
+        self.last_status = "idle"
+        self.last_error = ""
 
     @property
     def ready(self) -> bool:
         return bool(self.cfg.enabled and self.ai_config.ready)
 
-    def plan(self, question: str) -> Optional[QueryPlan]:
-        """发送前生成结构化计划；未启用/未配置/失败返回 None（原问题兜底）。"""
+    def plan(self, question: str, context: str = "") -> Optional[QueryPlan]:
+        """发送前生成结构化计划；context 用于追问指代，失败返回 None（原问题兜底）。"""
         question = (question or "").strip()
         if not question or not self.ready:
             return None
+        context = (context or "").strip()
+        cache_key = question + "\0" + context
         now = time.monotonic()
         with self._lock:
-            hit = self._plan_cache.get(question)
+            hit = self._plan_cache.get(cache_key)
             if hit is not None and now - hit[0] < 3600:
-                self._plan_cache.move_to_end(question)
+                self._plan_cache.move_to_end(cache_key)
+                self.last_status = "cached"
+                self.last_error = ""
                 return hit[1]
         try:
             client = LLMClient(self.ai_config)
+            prompt = question
+            if context:
+                prompt = (
+                    "当前追问：" + question +
+                    "\n\n上一轮上下文（只用于理解指代，不要直接照抄为检索词；"
+                    "当前问题中的省略主语/宾语可以从这里补全）：\n" + context
+                )
             result = client.chat(
                 [
                     {"role": "system", "content": self.cfg.system_prompt.strip() or DEFAULT_QUERY_PROMPT},
-                    {"role": "user", "content": question},
+                    {"role": "user", "content": prompt},
                 ],
-                max_tokens=500,
-                timeout_s=float(self.cfg.timeout_s),
+                max_tokens=4000,
+                # reasoning 模型可能先消耗数千 token；8s 容易超时，给计划至少 12s。
+                timeout_s=max(12.0, float(self.cfg.timeout_s)),
             )
             self.last_raw = str(result.get("text") or "")[:2000]
+            if not self.last_raw:
+                self.last_status = "empty"
+                self.last_error = "模型返回空文本（可能 reasoning tokens 用尽输出预算）"
+                log.warning("检索计划为空，回退原问题")
+                return None
             plan = parse_plan(
                 self.last_raw, question,
                 max_groups=max(1, min(4, int(self.cfg.max_queries or 4))),
             )
             if plan is None:
+                self.last_status = "parse_error"
+                self.last_error = "检索计划 JSON 解析失败"
                 log.warning("检索计划解析失败，回退原问题：%s", self.last_raw[:300])
+            else:
+                self.last_status = "ok"
+                self.last_error = ""
         except (LLMError, ValueError) as exc:
+            self.last_status = "timeout" if "timeout" in str(exc).lower() else "error"
+            self.last_error = str(exc)
             log.warning("检索计划生成失败：%s", exc)
             return None
         with self._lock:
-            self._plan_cache[question] = (now, plan)
-            self._plan_cache.move_to_end(question)
+            self._plan_cache[cache_key] = (now, plan)
+            self._plan_cache.move_to_end(cache_key)
             while len(self._plan_cache) > 128:
                 self._plan_cache.popitem(last=False)
         return plan

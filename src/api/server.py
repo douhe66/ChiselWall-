@@ -61,7 +61,7 @@ def _sse_response(events):
 #   - 页脚版本展示
 #   - /api/health 的 version 字段
 # 任何 UI 改动必须 bump 此值，否则用户浏览器仍可能命中旧缓存。
-APP_VERSION = "0.9.32"
+APP_VERSION = "0.9.56"
 log = logging.getLogger("chiselwall.api")
 
 # 健康检查路径：公开（不含知识内容）
@@ -199,11 +199,13 @@ class SessionIn(BaseModel):
 class SessionAskIn(BaseModel):
     text: str
     summarize: bool = True
+    use_plan: bool = True
 
 
 class CompleteIn(BaseModel):
     turn_id: int
     qid: str
+    rerank: bool = True
 
 
 class AskIn(BaseModel):
@@ -211,6 +213,7 @@ class AskIn(BaseModel):
     `from __future__ import annotations` 会让 FastAPI 无法解析注解，误判为 query 参数。"""
     text: str
     groups: Optional[list[str]] = None
+    use_plan: bool = True
 
 
 class GroupIn(BaseModel):
@@ -594,7 +597,7 @@ def create_app(agent, token: str = "") -> FastAPI:
         if not text:
             raise HTTPException(status_code=400, detail="问题不能为空")
         try:
-            return await agent.bus.ask(text, body.groups)
+            return await agent.bus.ask(text, body.groups, use_plan=body.use_plan)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
 
@@ -662,7 +665,7 @@ def create_app(agent, token: str = "") -> FastAPI:
         if not body.groups:
             raise HTTPException(status_code=400, detail="至少选择一个提问组")
         try:
-            return await agent.ask_session_ask(sid, text, body.groups)
+            return await agent.ask_session_ask(sid, text, body.groups, use_plan=body.use_plan)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
 
@@ -670,7 +673,7 @@ def create_app(agent, token: str = "") -> FastAPI:
     async def ask_session_complete(sid: str, body: CompleteIn) -> dict:
         import asyncio
 
-        result = await asyncio.to_thread(agent.ask_session_complete, sid, body.turn_id, body.qid)
+        result = await asyncio.to_thread(agent.ask_session_complete, sid, body.turn_id, body.qid, rerank=body.rerank)
         if not result.get("ok") and result.get("error"):
             raise HTTPException(status_code=400, detail=str(result["error"]))
         return result
@@ -781,7 +784,10 @@ def create_app(agent, token: str = "") -> FastAPI:
 
         text = (body.text or "").strip()
         variants = await asyncio.to_thread(agent.rewriter.rewrite, text)
-        return {"ready": agent.rewriter.ready, "variants": variants, "raw": getattr(agent.rewriter, "last_raw", "")}
+        return {"ready": agent.rewriter.ready, "variants": variants,
+                "raw": getattr(agent.rewriter, "last_raw", ""),
+                "status": getattr(agent.rewriter, "last_status", ""),
+                "error": getattr(agent.rewriter, "last_error", "")}
 
     # ---- 重排（P1） ----
     @app.get("/api/rerank/config", dependencies=[Depends(require_token)])
@@ -844,7 +850,7 @@ def create_app(agent, token: str = "") -> FastAPI:
                 detail="AI 未配置：请先在设置页填写 base_url / model（以及 api_key）",
             )
         try:
-            return await agent.bus.ask(text, body.groups)
+            return await agent.bus.ask(text, body.groups, use_plan=body.use_plan)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
 

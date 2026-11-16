@@ -522,6 +522,21 @@ class IndexDB:
         rows = self.query("SELECT text FROM chunks WHERE doc_id=? ORDER BY seq", (doc_id,))
         return [r["text"] for r in rows]
 
+    def chunk_start(self, doc_id: int, seq: int) -> int:
+        """chunk 在拼接全文中的起始字符偏移（含 chunk 间两个换行）。"""
+        rows = self.query(
+            "SELECT COALESCE(SUM(LENGTH(text) + 2),0) AS n FROM chunks WHERE doc_id=? AND seq<?",
+            (doc_id, seq),
+        )
+        return int(rows[0]["n"] or 0) if rows else 0
+
+    def doc_text_chars(self, doc_id: int) -> int:
+        """已索引正文总字符数；供 AI fetch 预算判断。"""
+        rows = self.query(
+            "SELECT COALESCE(SUM(LENGTH(text)),0) AS n FROM chunks WHERE doc_id=?", (doc_id,)
+        )
+        return int(rows[0]["n"] or 0) if rows else 0
+
     def doc_paths(self, mount_id: int) -> list[str]:
         rows = self.query("SELECT rel_path FROM docs WHERE mount_id=?", (mount_id,))
         return [r["rel_path"] for r in rows]
@@ -534,6 +549,17 @@ class IndexDB:
             )
             self._conn.commit()
             return int(cur.lastrowid)
+
+    def doc_group_names(self, doc_id: int) -> list[str]:
+        rows = self.query(
+            "SELECT DISTINCT g.name FROM groups g "
+            "JOIN group_members gm ON gm.group_id=g.group_id "
+            "JOIN docs d ON d.doc_id=? "
+            "WHERE gm.mount_id=d.mount_id AND ("
+            "gm.rel_path='' OR d.rel_path=gm.rel_path OR d.rel_path LIKE gm.rel_path || '/%')",
+            (doc_id,),
+        )
+        return [str(r["name"]) for r in rows]
 
     def list_groups(self) -> list[dict]:
         rows = self.query(

@@ -81,6 +81,7 @@ class SearchHit:
     plan_coverage: int = 0
     plan_clause_total: int = 0
     match_fields: tuple[str, ...] = ()  # title/path/content
+    char_start: int = 0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -159,6 +160,7 @@ class Searcher:
                     snippet_text=snippet_text,
                     route=route,
                     tier="weak" if weak else "strong",
+                    char_start=self.db.chunk_start(doc_id, int(row["seq"])),
                 )
             )
             if len(hits) >= (min(topk, 3) if weak else topk):
@@ -242,6 +244,7 @@ class Searcher:
             snippet_text=snippet_text,
             route="meta",
             tier="strong" if best_score > 0 else "weak",
+            char_start=self.db.chunk_start(doc_id, best_idx),
             match_fields=tuple(fields),
         )
 
@@ -356,6 +359,7 @@ class Searcher:
                     snippet_html=snippet_html,
                     snippet_text=snippet_text,
                     route="vector",
+                    char_start=self.db.chunk_start(doc_id, int(row["seq"])),
                 ),
                 "score": sim,
             })
@@ -584,10 +588,11 @@ class Searcher:
         return snippet_html, seg
 
     # ---- 全文查看 ----
-    def get_doc_text(self, doc_id: int, max_chars: int = 20000) -> Optional[str]:
+    def get_doc_text(self, doc_id: int, max_chars: int = 20000, start: int = 0) -> Optional[str]:
         """拼接 chunk 原文（仅 status=indexed；调用方须再复核排除规则）。"""
         doc = self.db.get_doc_by_id(doc_id)
         if doc is None or doc.status != "indexed":
             return None
         text = "\n\n".join(self.db.get_chunk_texts(doc_id))
-        return text[:max_chars]
+        start = max(0, int(start or 0))
+        return text[start:start + max_chars]

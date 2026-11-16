@@ -297,8 +297,8 @@ class NodeBusFetchTest(unittest.TestCase):
             def search(self, text: str, topk: int = 8):
                 return [FakeHit(7)]
 
-            def get_doc_text(self, doc_id: int, max_chars: int = 20000) -> str:
-                return "全文内容"
+            def get_doc_text(self, doc_id: int, max_chars: int = 20000, start: int = 0) -> str:
+                return "全文内容"[start:start + max_chars]
 
         bus = NodeBus(RelayConfig(enabled=True, relay_url="ws://x", nick="alice"), FakeSearcher())
         bus.client.connected = True

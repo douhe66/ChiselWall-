@@ -447,7 +447,8 @@ class NodeBus:
         return await self.client.create_group(name, description)
 
     # ---- 提问 ----
-    async def ask(self, text: str, groups: Optional[list[str]] = None, *, use_plan: bool = True, research_id: str = "") -> dict:
+    async def ask(self, text: str, groups: Optional[list[str]] = None, *, use_plan: bool = True,
+                  research_id: str = "", plan_override: object = None) -> dict:
         if not self.cfg.enabled:
             raise ValueError("未配置 relay（relay_url/nick/token），无法使用随手问")
         if not self.connected:
@@ -459,7 +460,10 @@ class NodeBus:
         refined = text
         plan = None
         plan_dict = None
-        if use_plan and self.plan_fn is not None:
+        if plan_override is not None:
+            plan = plan_override
+            plan_dict = plan.to_dict() if hasattr(plan, "to_dict") else plan
+        elif use_plan and self.plan_fn is not None:
             # 发送前生成结构化计划；未启用/未配置/失败都回退原问题，不调用旧改写。
             try:
                 plan = await asyncio.to_thread(self.plan_fn, text)
@@ -481,7 +485,7 @@ class NodeBus:
                     variants = []
             if variants:
                 refined = self._pick_broadcast_query(text, [str(v).strip() for v in variants if str(v).strip()])
-        send_text = original if (use_plan and self.plan_fn is not None) else refined
+        send_text = original if (plan is not None or (use_plan and self.plan_fn is not None)) else refined
         item = self.asks.create(original, gs, search_text=send_text, plan=plan_dict)
         # 本机检索与远端使用同一份计划；没有计划则原问题普通检索。
         local_started = time.monotonic()
@@ -520,6 +524,15 @@ class NodeBus:
         if not ok:
             raise ValueError("relay 发送失败（连接已断开）")
         return {"qid": item.qid, "groups": gs, "deadline_ms": self.cfg.ask_deadline_ms, "plan": plan_dict}
+
+    def revoke_doc(self, doc_id: int) -> None:
+        """文档共享状态变化时清理所有已授权缓存，阻止后续 fetch。"""
+        for allowed in self._allowed.values():
+            allowed.pop(int(doc_id), None)
+
+    def revoke_all(self) -> None:
+        """分组/权限规则变化时清理全部授权缓存。"""
+        self._allowed.clear()
 
     def view(self, qid: str) -> Optional[dict]:
         return self.asks.view(qid, online=self.online)
@@ -631,6 +644,11 @@ class NodeBus:
                 try:
                     db = getattr(self.local_searcher, "db", None) or getattr(self.searcher, "db", None)
                     if db is not None:
+                        doc = db.get_doc_by_id(int(h.doc_id))
+                        if doc is not None:
+                            d["content_hash"] = str(doc.hash or "")
+                            d["mtime"] = float(doc.mtime or 0.0)
+                            d["size"] = int(doc.size or 0)
                         chunks = db.get_chunk_texts(int(h.doc_id))
                         from ai.rag import select_local_window
 
@@ -662,6 +680,7 @@ class NodeBus:
         req_id = str(msg.get("req_id") or "")
         doc_id = int(msg.get("doc_id") or 0)
         max_chars = max(1000, min(50000, int(msg.get("max_chars") or 8000)))
+        start = max(0, int(msg.get("start") or 0))
         if asker in ("", self.cfg.nick):
             return
         bucket = self._fetch_buckets.setdefault(asker, TokenBucket(rate=0.2, burst=4))
@@ -671,6 +690,35 @@ class NodeBus:
                  "text": "", "error": "请求过于频繁"}
             )
             return
+        # 10 分钟缓存之外，必须在每次 fetch 前重新检查当前共享状态。
+        db = getattr(self.searcher, "db", None)
+        if db is not None:
+            try:
+                doc = db.get_doc_by_id(doc_id)
+                mount = db.get_mount(int(doc.mount_id)) if doc is not None else None
+            except Exception:
+                doc, mount = None, None
+            if doc is None or str(doc.share_state) != "shared" or mount is None or not bool(mount.enabled):
+                await self.client.send(
+                    {"type": "fetch_result", "to": asker, "req_id": req_id, "doc_id": doc_id,
+                     "text": "", "error": "共享状态已撤销或文档不可共享"}
+                )
+                return
+            asker_groups = {str(g) for g in (msg.get("groups") or []) if str(g)}
+            doc_groups = set(db.doc_group_names(doc_id))
+            if doc_groups and asker_groups and not (doc_groups & asker_groups):
+                await self.client.send(
+                    {"type": "fetch_result", "to": asker, "req_id": req_id, "doc_id": doc_id,
+                     "text": "", "error": "分组权限已撤销"}
+                )
+                return
+            expected_hash = str(msg.get("expected_hash") or "")
+            if expected_hash and str(doc.hash or "") != expected_hash:
+                await self.client.send(
+                    {"type": "fetch_result", "to": asker, "req_id": req_id, "doc_id": doc_id,
+                     "text": "", "error": "文档版本已变化，请重新搜索"}
+                )
+                return
         allowed = self._allowed.get(asker, {})
         expiry = allowed.get(doc_id)
         if expiry is None or expiry < time.monotonic():
@@ -680,7 +728,7 @@ class NodeBus:
             )
             return
         try:
-            text = await asyncio.to_thread(self.searcher.get_doc_text, doc_id, max_chars)
+            text = await asyncio.to_thread(self.searcher.get_doc_text, doc_id, max_chars, start)
         except Exception as exc:
             log.exception("读取文档失败 doc_id=%s", doc_id)
             text = ""
@@ -692,7 +740,9 @@ class NodeBus:
              "text": (text or "")[:max_chars], "error": err}
         )
 
-    async def fetch(self, node: str, doc_id: int, timeout_s: float = 15.0, max_chars: int = 8000) -> str:
+    async def fetch(self, node: str, doc_id: int, timeout_s: float = 15.0, max_chars: int = 8000,
+                    start: int = 0, groups: Optional[list[str]] = None,
+                    expected_hash: str = "") -> str:
         """向对端请求全文预览（仅限其最近返回给本机的搜索结果）。"""
         import uuid
 
@@ -704,7 +754,10 @@ class NodeBus:
         try:
             ok = await self.client.send(
                 {"type": "fetch", "to": node, "asker": self.cfg.nick,
-                 "req_id": req_id, "doc_id": int(doc_id), "max_chars": int(max_chars)}
+                 "req_id": req_id, "doc_id": int(doc_id), "max_chars": int(max_chars),
+                 "start": max(0, int(start)),
+                 "groups": list(groups if groups is not None else self.cfg.groups),
+                 "expected_hash": str(expected_hash or "")}
             )
             if not ok:
                 raise ValueError("relay 发送失败")
