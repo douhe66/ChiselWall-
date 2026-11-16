@@ -56,7 +56,7 @@
     </div>
   </aside>
 
-  <main v-if="page === 'notes'">
+  <main v-if="page === 'notes'" class="notes-page">
     <header class="page-head">
       <div class="page-title">
         <div class="eyebrow"><span class="eyebrow-dot"></span> LOCAL KNOWLEDGE / 本机知识库</div>
@@ -332,12 +332,15 @@
       <aside class="chat-sessions">
         <button class="btn" style="width:100%;margin-bottom:8px" @click="newAskSession">+ 新建会话</button>
         <div v-if="!askSessions.length" class="muted small">暂无会话，点上方新建；首问会广播。</div>
-        <div v-for="s in askSessions" :key="s.id" class="chat-session" :class="{ active: askSession && askSession.id === s.id }" @click="openAskSession(s.id)">
-          <div class="chat-session-title">{{ s.title }}</div>
-          <div class="muted small">{{ s.message_count }} 条</div>
-          <div class="chat-session-actions">
-            <button class="btn small" @click.stop="renameAskSession(s)">改名</button>
-            <button class="btn small" @click.stop="deleteAskSession(s)">删除</button>
+        <div v-for="s in askSessions" :key="s.id" class="chat-session" :class="{ active: askSession && askSession.id === s.id }">
+          <div class="chat-session-main" @click="openAskSession(s.id)">
+            <div class="chat-session-title">{{ s.title }}</div>
+            <div class="chat-session-count">{{ s.message_count }} 条</div>
+          </div>
+          <button class="chat-session-more" type="button" title="更多操作" @click.stop="askSessionMenu = askSessionMenu === s.id ? '' : s.id">···</button>
+          <div v-if="askSessionMenu === s.id" class="chat-session-menu" @click.stop>
+            <button type="button" @click="renameAskSession(s)">改名</button>
+            <button type="button" @click="deleteAskSession(s)">删除</button>
           </div>
         </div>
       </aside>
@@ -358,12 +361,18 @@
             <div v-if="!askTurns.length" class="muted small">这个会话还没有提问。</div>
             <div v-for="t in askTurns" :key="t.id" class="chat-msg" :class="t.role">
               <div class="chat-role">{{ t.role === 'user' ? '我' : '回答' }}</div>
-              <div class="md-preview" v-html="renderMarkdown(t.content)"></div>
+              <div v-if="t.role === 'assistant'" class="md-preview answer-md" v-html="renderAnswer(t.content, t.payload?.citations || [])" @click="onAnswerCitationClick($event, t)" @keydown.enter="onAnswerCitationClick($event, t)"></div>
+              <div v-else class="md-preview" v-html="renderMarkdown(t.content)"></div>
               <div v-if="t.role === 'user' && t.payload" class="ask-turn-meta">
                 <span v-if="t.payload.elapsed_ms !== undefined" class="badge">等待 {{ formatElapsed(t.payload.elapsed_ms) }}</span>
                 <span v-if="t.payload.responded" class="badge">返回 {{ t.payload.responded }}/{{ t.payload.expected }} 位</span>
                 <span v-for="a in (t.payload.answers || [])" :key="a.node" class="badge kind">@{{ a.node }} 检索 {{ formatElapsed(a.elapsed_ms) }} · {{ a.hit_count }} 条</span>
                 <span v-if="t.payload.search_text && t.payload.search_text !== t.content" class="muted small">实际检索：{{ t.payload.search_text }}</span>
+                <div class="ask-query-line">
+                  <span class="badge">本轮检索词</span>
+                  <span v-if="t.payload.plan" class="plan-term">{{ planText(t.payload.plan) }}</span>
+                  <span v-else class="muted small">原文：{{ t.payload.search_text || t.content }}</span>
+                </div>
                 <details v-if="t.payload.plan && (t.payload.plan.clauses || []).length" class="plan-details">
                   <summary class="muted small">智能改写 · {{ (t.payload.plan.clauses || []).length }} 组 <span class="plan-more">查看改写词</span></summary>
                   <div class="plan-clauses">
@@ -391,7 +400,9 @@
               </div>
               <div v-if="t.role === 'assistant' && t.payload && (t.payload.citations || []).length" class="chat-citations" style="padding:6px 0 0">
                 <span class="muted small">引用（本轮）：</span>
-                <span v-for="c in t.payload.citations" :key="c.index" class="badge">[{{ c.index }}] {{ c.title }}</span>
+                <span v-for="c in t.payload.citations" :key="c.index" class="badge citation-badge" role="button" tabindex="0" @click="jumpToCitation(c)" @keydown.enter="jumpToCitation(c)">
+                  [{{ c.index }}] {{ c.title }}<template v-if="citationCardIndex(c) >= 0"> · 卡片 #{{ citationCardIndex(c) + 1 }}</template>
+                </span>
               </div>
               <div v-if="t.role === 'user' && t.payload && (t.payload.aggregated || []).length" class="muted small">本轮命中 {{ t.payload.aggregated.length }} 处（右侧查看原文）</div>
 
@@ -454,8 +465,9 @@
             <p>提问后，这里会先出现搜索结果。</p>
           </div>
           <div v-if="askLatestHits().length && askLatestHits().every(h => h.tier === 'weak')" class="sensitivity-hint">只找到弱相关结果；AI 会基于这些片段谨慎回答，可能不完整。</div>
-          <article class="hit" v-for="(h, i) in askLatestHits()" :key="i">
+          <article class="hit" v-for="(h, i) in askLatestHits()" :key="i" :id="'ask-hit-' + i">
             <header>
+              <span class="badge hit-number">卡片 #{{ i + 1 }}</span>
               <strong>{{ h.title }}</strong>
               <span class="badge">{{ h.format }}</span>
               <span v-if="h.tier === 'weak'" class="badge route-fallback">弱相关</span>

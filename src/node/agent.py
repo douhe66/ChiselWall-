@@ -170,6 +170,7 @@ class NodeAgent:
             search_fn=self.search_local_expanded,
             rewrite_fn=lambda q: self.rewriter.rewrite(q),
             plan_fn=lambda q: self.rewriter.plan(q),
+            plan_ready_fn=lambda: self.rewriter.ready,
             local_searcher=self.searcher,
         )
         from retrieval.kernel import RetrievalKernel
@@ -497,6 +498,7 @@ class NodeAgent:
             search_fn=self.search_local_expanded,
             rewrite_fn=lambda q: self.rewriter.rewrite(q),
             plan_fn=lambda q: self.rewriter.plan(q),
+            plan_ready_fn=lambda: self.rewriter.ready,
             local_searcher=self.searcher,
         )
         self.bus.start()

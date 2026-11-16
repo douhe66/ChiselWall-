@@ -72,7 +72,7 @@ class PlanTest(unittest.TestCase):
 
 
 class BusPlanTest(unittest.TestCase):
-    def _bus(self, plan_fn):
+    def _bus(self, plan_fn, plan_ready_fn=None):
         class FakeSearcher:
             def search(self, text, _topk=8):
                 return [hit(1)] if text else []
@@ -80,6 +80,7 @@ class BusPlanTest(unittest.TestCase):
         bus = NodeBus(
             RelayConfig(enabled=True, relay_url="ws://x", nick="alice"),
             FakeSearcher(), plan_fn=plan_fn, local_searcher=FakeSearcher(),
+            plan_ready_fn=plan_ready_fn,
         )
         bus.client.connected = True
         sent = []
@@ -108,6 +109,19 @@ class BusPlanTest(unittest.TestCase):
     def test_none_falls_back_original(self):
         bus, sent = self._bus(lambda q: None)
         asyncio.run(bus.ask("原始问题", ["全员组"]))
+        self.assertEqual(sent[0]["text"], "原始问题")
+        self.assertIsNone(sent[0]["plan"])
+
+    def test_not_ready_skips_plan_without_wait(self):
+        calls = []
+
+        def plan_fn(q):
+            calls.append(q)
+            raise AssertionError("AI 未就绪时不应调用 QueryPlan")
+
+        bus, sent = self._bus(plan_fn, plan_ready_fn=lambda: False)
+        asyncio.run(bus.ask("原始问题", ["全员组"]))
+        self.assertEqual(calls, [])
         self.assertEqual(sent[0]["text"], "原始问题")
         self.assertIsNone(sent[0]["plan"])
 

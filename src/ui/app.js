@@ -64,6 +64,7 @@ createApp({
       askTimer: null,
       askSessions: [],
       askSession: null,
+      askSessionMenu: "",
       askOpenSeq: 0,
       askTurns: [],
       askInput: "",
@@ -399,6 +400,7 @@ createApp({
       }
     },
     async newAskSession() {
+      this.askSessionMenu = "";
       try {
         const s = await this.api("/api/ask-sessions", {
           method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: "新会话" }),
@@ -419,6 +421,7 @@ createApp({
       return !!(sid && this.askSession && this.askSession.id === sid);
     },
     async openAskSession(id) {
+      this.askSessionMenu = "";
       const seq = ++this.askOpenSeq;
       const switching = !this.askSession || this.askSession.id !== id;
       if (switching) {
@@ -441,6 +444,7 @@ createApp({
       }
     },
     async renameAskSession(s) {
+      this.askSessionMenu = "";
       const title = prompt("会话名称", s.title || "");
       if (title === null || !title.trim()) return;
       try {
@@ -454,6 +458,7 @@ createApp({
       }
     },
     async deleteAskSession(s) {
+      this.askSessionMenu = "";
       if (!confirm("删除会话「" + s.title + "」？消息不可恢复。")) return;
       try {
         await this.api("/api/ask-sessions/" + s.id, { method: "DELETE" });
@@ -601,6 +606,11 @@ createApp({
       const n = Number(ms);
       if (!Number.isFinite(n) || n <= 0) return "<1ms";
       return n + "ms";
+    },
+    planText(plan) {
+      if (!plan) return "";
+      if (plan.expression) return plan.expression;
+      return (plan.clauses || []).map((g) => (g.terms || []).join(" OR ")).join(" AND ");
     },
     traceActionLabel(action) {
       return { plan: "首轮计划", search: "重新检索", fetch: "读取全文", answer: "生成回答", fallback: "回退综合" }[action] || action;
@@ -1085,8 +1095,59 @@ createApp({
       flushList();
       return out.join("\n").replace(/@@CODE(\d+)@@/g, (m, i) => blocks[Number(i)] || "");
     },
-    renderAnswer(text) {
-      return this.renderMarkdown(text, { citations: true });
+    renderAnswer(text, citations = []) {
+      let html = this.renderMarkdown(text || "", { citations: false });
+      html = html.replace(/\[e(\d+)\]/g, (m, eid) =>
+        '<span class="cite-link" role="button" tabindex="0" data-cite="e' + eid + '">[e' + eid + ']</span>');
+      for (const c of citations || []) {
+        const n = String(c.index || "");
+        if (!n) continue;
+        const eid = c.evidence_id || "";
+        const attr = eid ? ' data-cite="' + eid + '"' : "";
+        html = html.replace(new RegExp("\\[" + n + "\\]", "g"),
+          '<span class="cite-link" role="button" tabindex="0"' + attr + ' data-cite-index="' + n + '">[' + n + ']</span>');
+      }
+      return html;
+    },
+    citationCardIndex(c) {
+      const hits = this.askLatestHits();
+      const docs = ((c && c.sources) || []).map((s) => String(s.doc_id || "")).filter(Boolean);
+      return hits.findIndex((h) => {
+        const hDocs = [h.doc_id, ...((h.sources || []).map((s) => s.doc_id))]
+          .filter(Boolean).map(String);
+        if (docs.some((x) => hDocs.includes(x))) return true;
+        return !!(c.rel_path && h.rel_path === c.rel_path);
+      });
+    },
+    jumpToCitation(c) {
+      const idx = this.citationCardIndex(c);
+      if (idx < 0) {
+        this.showToast("该引用对应的卡片不在右侧当前结果中", "info");
+        return;
+      }
+      const hit = this.askLatestHits()[idx];
+      if (hit) hit.snippetExpanded = true;
+      this.$nextTick(() => {
+        const el = document.getElementById("ask-hit-" + idx);
+        if (!el) return;
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        el.classList.add("hit-flash");
+        setTimeout(() => el.classList.remove("hit-flash"), 1400);
+      });
+    },
+    onAnswerCitationClick(event, turn) {
+      const el = event.target.closest("[data-cite], [data-cite-index]");
+      if (!el) return;
+      const eid = el.getAttribute("data-cite") || "";
+      const index = el.getAttribute("data-cite-index") || "";
+      const citations = (turn && turn.payload && turn.payload.citations) || [];
+      const c = citations.find((x) =>
+        (eid && x.evidence_id === eid) || (!eid && index && String(x.index) === index));
+      if (!c) {
+        this.showToast("未找到该引用的结果卡片", "info");
+        return;
+      }
+      this.jumpToCitation(c);
     },
     renderSnippet(hit) {
       return this.renderMarkdown((hit && hit.snippet_text) || "", {});

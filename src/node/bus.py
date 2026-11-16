@@ -394,12 +394,14 @@ class NodeBus:
     """节点广播总线：提问发起 + 对端应答 + 结果视图。"""
 
     def __init__(self, cfg: RelayConfig, searcher: Any, search_fn: Any = None,
-                 rewrite_fn: Any = None, plan_fn: Any = None, local_searcher: Any = None) -> None:
+                 rewrite_fn: Any = None, plan_fn: Any = None, local_searcher: Any = None,
+                 plan_ready_fn: Any = None) -> None:
         self.cfg = cfg
         self.searcher = searcher
         self.search_fn = search_fn
         self.rewrite_fn = rewrite_fn
         self.plan_fn = plan_fn
+        self.plan_ready_fn = plan_ready_fn
         self.local_searcher = local_searcher or searcher
         self.asks = AskService(deadline_ms=cfg.ask_deadline_ms)
         self.client = RelayClient(cfg, self._on_message)
@@ -460,10 +462,20 @@ class NodeBus:
         refined = text
         plan = None
         plan_dict = None
+        plan_owner = getattr(self.plan_fn, "__self__", None)
+        if self.plan_ready_fn is not None:
+            try:
+                plan_ready = bool(self.plan_ready_fn())
+            except Exception:
+                plan_ready = False
+        else:
+            plan_ready = not (
+                plan_owner is not None and hasattr(plan_owner, "ready") and not bool(plan_owner.ready)
+            )
         if plan_override is not None:
             plan = plan_override
             plan_dict = plan.to_dict() if hasattr(plan, "to_dict") else plan
-        elif use_plan and self.plan_fn is not None:
+        elif use_plan and self.plan_fn is not None and plan_ready:
             # 发送前生成结构化计划；未启用/未配置/失败都回退原问题，不调用旧改写。
             try:
                 plan = await asyncio.to_thread(self.plan_fn, text)
