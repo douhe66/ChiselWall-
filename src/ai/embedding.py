@@ -11,6 +11,8 @@ from typing import Optional, Protocol
 
 import httpx
 
+from ai import onnx_support
+
 log = logging.getLogger("chiselwall.vector")
 
 QUERY_PREFIX = "为这个句子生成表示以用于检索相关文章："
@@ -108,7 +110,7 @@ class LocalOnnxEmbeddings:
 
     @property
     def ready(self) -> bool:
-        return (self.dir / "onnx" / "model_quantized.onnx").exists() and (
+        return onnx_support.available() and (self.dir / "onnx" / "model_quantized.onnx").exists() and (
             self.dir / "tokenizer.json"
         ).exists()
 
@@ -118,6 +120,9 @@ class LocalOnnxEmbeddings:
         with self._lock:
             if self._sess is not None:
                 return
+            ok, why = onnx_support.probe_onnx()
+            if not ok:
+                raise RuntimeError("ONNX Runtime 不可用，已回退关键词检索：" + why)
             import numpy as np
             import onnxruntime as ort
             from tokenizers import Tokenizer

@@ -24,41 +24,63 @@ def select_local_window(chunks: list[str], seq: int, *, max_chars: int = 3000) -
     return text[:max_chars]
 
 
+def estimate_tokens(text: str) -> int:
+    """轻量 token 估算：CJK 近似 1 字 1 token，ASCII 近似 4 字符 1 token。"""
+    if not text:
+        return 0
+    cjk = sum(1 for ch in text if ord(ch) > 127)
+    return cjk + max(1, (len(text) - cjk) // 4)
+
+
+def _clean_meta(value: object, limit: int) -> str:
+    """标题/路径只保留单行文本，避免换行或超长字段污染资料块。"""
+    text = " ".join(str(value or "").split())
+    return text[:limit]
+
+
 def build_context(
     aggregated: list[dict],
     *,
     max_chars: int = 24000,
     top_n: int = 24,
     snippet_chars: int = 320,
+    max_tokens: Optional[int] = None,
 ) -> tuple[str, list[dict]]:
     """把聚合命中拼成编号资料，并在字符预算内截断。返回 (context, citations)。"""
     parts: list[str] = []
     citations: list[dict] = []
     used = 0
+    used_tokens = 0
+    # 单条资料最多占上下文预算的 25%，避免一条超长文档挤掉其他命中。
+    max_hit_chars = max(800, min(6000, max_chars // 4))
     for hit in aggregated[:top_n]:
-        title = str(hit.get("title") or "")[:80]
-        # 远端节点会附带 ai_text（命中块及相邻块，约 1–4KB）；
-        # 老版本/本地命中没有时回退到普通 snippet。
+        title = _clean_meta(hit.get("title"), 80)
+        # 远端 ai_text 与本地全文都受同一条单条配额约束，避免一条资料挤掉其他命中。
         snippet = str(hit.get("ai_text") or hit.get("snippet_text") or hit.get("snippet_html") or "")
         limit = snippet_chars
-        if hit.get("ai_text"):
-            limit = max_chars
-        if hit.get("context_full"):
-            limit = max(snippet_chars, min(16000, max_chars // 2))
         if hit.get("context_full") or hit.get("ai_text"):
+            limit = max_hit_chars
             snippet = snippet[:limit]
+        if not hit.get("context_full") and not hit.get("ai_text"):
+            limit = snippet_chars
+            snippet = " ".join(snippet.split())[:limit]
         else:
             snippet = " ".join(snippet.split())[:limit]
         if not snippet:
             continue
-        nodes = ",".join(hit.get("nodes") or []) or "?"
-        rel = str(hit.get("rel_path") or "")
+        nodes = _clean_meta(",".join(hit.get("nodes") or []), 80) or "?"
+        rel = _clean_meta(hit.get("rel_path"), 240)
         weak = "；弱相关" if str(hit.get("tier") or "strong") == "weak" else ""
         block = "[%d] 《%s》（来源：%s；路径：%s%s）\n%s" % (len(citations) + 1, title, nodes, rel, weak, snippet)
-        if used + len(block) > max_chars:
+        block_tokens = estimate_tokens(block)
+        if used + len(block) > max_chars or (max_tokens is not None and used_tokens + block_tokens > max_tokens):
             if citations:
                 break
             block = block[:max_chars]  # 单条超预算时硬截断，避免整个上下文超限
+            while max_tokens is not None and len(block) > 1 and estimate_tokens(block) > max_tokens:
+                # 首块也不得越过 token 预算；按 10% 回退，保留尽量多正文。
+                block = block[: max(1, int(len(block) * 0.9))]
+            block_tokens = estimate_tokens(block)
         parts.append(block)
         citations.append({
             "index": len(citations) + 1,
@@ -69,6 +91,7 @@ def build_context(
             "sources": hit.get("sources") or [],
         })
         used += len(block)
+        used_tokens += block_tokens
     return "\n\n".join(parts), citations
 
 
@@ -103,7 +126,10 @@ def stream_answer(
     if not cfg.ready:
         yield {"type": "error", "error": "AI 未配置：请在设置页填写 base_url / model（以及 api_key）"}
         return
-    context, citations = build_context(aggregated, max_chars=cfg.max_context_chars, top_n=cfg.top_n)
+    context, citations = build_context(
+        aggregated, max_chars=cfg.max_context_chars, top_n=cfg.top_n,
+        max_tokens=cfg.max_context_tokens,
+    )
     strong_n = sum(1 for h in aggregated if str(h.get("tier") or "strong") != "weak")
     weak_n = sum(1 for h in aggregated if str(h.get("tier") or "strong") == "weak")
     started = time.monotonic()
@@ -182,7 +208,8 @@ def answer_question(
             "error": "AI 未配置：请在设置页填写 base_url / model（以及 api_key）",
         }
     context, citations = build_context(
-        aggregated, max_chars=cfg.max_context_chars, top_n=cfg.top_n
+        aggregated, max_chars=cfg.max_context_chars, top_n=cfg.top_n,
+        max_tokens=cfg.max_context_tokens,
     )
     llm = client or LLMClient(cfg)
     try:

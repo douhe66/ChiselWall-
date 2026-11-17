@@ -6,10 +6,11 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from ai.embedding import FakeEmbeddings
+from ai.embedding import FakeEmbeddings, LocalOnnxEmbeddings
 from ai.vector_index import VectorIndex
 from ai.vectorstore import VectorStore
 from indexer.db import IndexDB
@@ -45,6 +46,14 @@ def make_db(tmp: Path):
     doc2 = db.upsert_doc(mount, "b.md", str(tmp / "b.md"), "Vue 组件", "md", 1.0, 10, "h2", "indexed")
     db.set_chunks(doc2, ["Vue 组件通信 props emit 用法。"], lambda s: s)
     return db, mount, doc1, doc2
+
+
+class OnnxGuardTest(unittest.TestCase):
+    def test_local_ready_false_when_onnx_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch("ai.embedding.onnx_support.available", return_value=False):
+                emb = LocalOnnxEmbeddings(tmp, dim=512)
+                self.assertFalse(emb.ready)
 
 
 class VectorStoreTest(unittest.TestCase):

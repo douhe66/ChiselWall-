@@ -73,6 +73,20 @@ class HistoryTest(unittest.TestCase):
                 agent.stop()
 
 
+class CompleteSessionTest(unittest.TestCase):
+    def test_expired_qid_returns_error_not_name_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = NodeAgent(Config(db_path=Path(tmp) / "c.db", config_dir=Path(tmp) / "cfg"))
+            try:
+                s = agent.ask_sessions.create("会话")
+                t = agent.ask_sessions.append(s["id"], "user", "问题", {"qid": "missing"})
+                result = agent.ask_session_complete(s["id"], t["id"], "missing")
+                self.assertFalse(result["ok"])
+                self.assertIn("过期", result["error"])
+            finally:
+                agent.stop()
+
+
 class FollowupTest(unittest.TestCase):
     def test_followup_uses_previous_item(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

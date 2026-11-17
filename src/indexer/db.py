@@ -518,6 +518,55 @@ class IndexDB:
             self._conn.commit()
         return len(chunks)
 
+    def replace_doc_chunks(
+        self,
+        doc_id: int,
+        chunks: list[str],
+        tokenized: list[str],
+        *,
+        title: str,
+        rel_path: str,
+        abs_path: str,
+        format: str,
+        mtime: float,
+        size: int,
+        file_hash: str,
+        truncated: bool,
+        trigram: bool = False,
+        trigram_max_chars: int = 100_000,
+    ) -> int:
+        """单文档原子替换：旧 chunk 删除、新 chunk 写入、状态/indexed 同一事务。
+
+        tokenized 在事务外预先完成，避免持锁分词；失败回滚后旧内容仍可检索。
+        """
+        if len(chunks) != len(tokenized):
+            raise ValueError("chunks/tokenized 数量不一致")
+        write_trigram = trigram and sum(len(c) for c in chunks) <= trigram_max_chars
+        with self.tx() as conn:
+            self._delete_chunks_locked(doc_id)
+            for seq, (text, jt) in enumerate(zip(chunks, tokenized)):
+                cur = conn.execute(
+                    "INSERT INTO chunks(doc_id, seq, text) VALUES(?,?,?)", (doc_id, seq, text)
+                )
+                cid = int(cur.lastrowid)
+                conn.execute(
+                    "INSERT INTO chunks_fts(rowid, content, content_jieba) VALUES(?,?,?)",
+                    (cid, text, jt),
+                )
+                if write_trigram:
+                    conn.execute(
+                        "INSERT INTO chunks_trigram(rowid, content) VALUES(?,?)", (cid, text)
+                    )
+            conn.execute(
+                "UPDATE docs SET title=?, rel_path=?, abs_path=?, format=?, mtime=?, size=?, "
+                "hash=?, status='indexed', error=NULL, chunk_count=?, truncated=?, updated_at=? "
+                "WHERE doc_id=?",
+                (title, rel_path, abs_path, format, mtime, size, file_hash,
+                 len(chunks), int(truncated), _now(), doc_id),
+            )
+            self._update_docs_meta_locked(doc_id, title, rel_path)
+            return len(chunks)
+
     def get_chunk_texts(self, doc_id: int) -> list[str]:
         rows = self.query("SELECT text FROM chunks WHERE doc_id=? ORDER BY seq", (doc_id,))
         return [r["text"] for r in rows]

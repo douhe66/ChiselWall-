@@ -26,8 +26,10 @@ from __future__ import annotations
 
 import html
 import re
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from typing import Optional
+
+from . import ranking
 
 from indexer.db import IndexDB
 from indexer.jieba_util import (
@@ -78,6 +80,9 @@ class SearchHit:
     snippet_text: str
     route: str  # jieba / jieba_and / jieba_or / trigram / like / meta / vector / hybrid
     tier: str = "strong"  # strong | weak（weak 默认折叠、不进 AI 上下文）
+    raw_score: float = 0.0  # 原始 BM25/相似度，含义由 route 决定；越小/越大不统一
+    score_stage: str = "bm25"  # lexical | rrf_meta | rrf_vector | rerank | consensus
+    score_components: dict = field(default_factory=dict)
     plan_coverage: int = 0
     plan_clause_total: int = 0
     match_fields: tuple[str, ...] = ()  # title/path/content
@@ -165,8 +170,21 @@ class Searcher:
             )
             if len(hits) >= (min(topk, 3) if weak else topk):
                 break
+        self._finalize_lexical(hits)
         hits = self._merge_meta(query, terms, hits, topk)
         return self._anchor_ascii(query, self._merge_vector(query, terms, hits, topk))
+
+    def _finalize_lexical(self, hits: list[SearchHit]) -> None:
+        """把 BM25 顺序转成统一的高分优先 RRF，同时保留原始 BM25。"""
+        for rank, hit in enumerate(hits):
+            raw = float(hit.score)
+            hit.raw_score = raw
+            ranking.set_score(
+                hit,
+                ranking.rrf(rank),
+                "lexical",
+                {"bm25": raw, "lexical_rank": rank + 1, "rrf_lexical": ranking.rrf(rank)},
+            )
 
     @staticmethod
     def _anchor_ascii(query: str, hits: list[SearchHit]) -> list[SearchHit]:
@@ -276,20 +294,35 @@ class Searcher:
                 merged.append(mh)
 
         total_terms = max(1, len([t for t in terms if t]))
-        def score(h: SearchHit) -> float:
+
+        def fused(h: SearchHit) -> tuple[float, dict]:
             doc_id = int(h.doc_id)
-            rrf = 1.0 / (60.0 + content_rank[doc_id]) if doc_id in content_rank else 0.0
-            if doc_id in meta_rank:
-                rrf += 0.7 / (60.0 + meta_rank[doc_id])
+            lexical = ranking.rrf(content_rank[doc_id]) if doc_id in content_rank else 0.0
+            meta = ranking.rrf(meta_rank[doc_id], weight=0.7) if doc_id in meta_rank else 0.0
             covered = sum(
                 1 for t in set(t.lower() for t in terms if t)
                 if t in (h.title or "").lower() or t in (h.rel_path or "").lower()
                 or t in (h.snippet_text or "").lower()
             )
-            return rrf + 0.15 * (covered / total_terms)
+            coverage = 0.15 * (covered / total_terms)
+            return lexical + meta + coverage, {
+                "rrf_lexical": lexical,
+                "rrf_meta": meta,
+                "coverage": coverage,
+                "meta_rank": meta_rank.get(doc_id, 0),
+            }
 
-        merged.sort(key=score, reverse=True)
-        return merged[:max(topk, len(hits))]
+        ranked: list[tuple[float, dict, SearchHit]] = []
+        for h in merged:
+            value, parts = fused(h)
+            ranked.append((value, parts, h))
+        ranked.sort(key=lambda row: row[0], reverse=True)
+        out = []
+        for value, parts, h in ranked:
+            parts.update(ranking.components(h))
+            ranking.set_score(h, value, "rrf_meta", parts)
+            out.append(h)
+        return out[:max(topk, len(hits))]
 
     # ---- 向量混合（M7 / P0 噪声收敛） ----
     def _merge_vector(self, query, terms, bm_hits, topk):
@@ -318,8 +351,12 @@ class Searcher:
         require_lexical = bool(getattr(vi, "require_lexical", True))
         fused: dict[int, dict] = {}
         for rank, hit in enumerate(bm_hits):
+            base = ranking.rrf(rank)
+            parts = ranking.components(hit)
+            parts.update({"rrf_lexical": base, "pre_vector_score": float(hit.score)})
             fused[int(hit.doc_id)] = {
-                "hit": hit, "score": 1.0 / (60 + rank + 1), "bm25": True, "vec": False,
+                "hit": hit, "score": base, "bm25": True, "vec": False,
+                "parts": parts,
             }
         vec_only: list[dict] = []
         seen_vec_docs: set[int] = set()
@@ -341,40 +378,50 @@ class Searcher:
             item = fused.get(doc_id)
             if item is not None:
                 item["vec"] = True
-                item["score"] += 0.7 / (60 + rank + 1)
+                vec_part = ranking.rrf(rank, weight=0.7)
+                item["score"] += vec_part
+                item["parts"].update({"rrf_vector": vec_part, "vector_similarity": sim})
                 continue
             if len(vec_only) >= vec_max:
                 continue
             snippet_html, snippet_text = self._build_snippet(row["text"], terms)
-            vec_only.append({
-                "hit": SearchHit(
-                    doc_id=doc_id,
-                    mount_id=int(row["mount_id"]),
-                    title=row["title"],
-                    rel_path=row["rel_path"],
-                    abs_path=row["abs_path"],
-                    format=row["format"],
-                    score=sim,
-                    chunk_seq=int(row["seq"]),
-                    snippet_html=snippet_html,
-                    snippet_text=snippet_text,
-                    route="vector",
-                    char_start=self.db.chunk_start(doc_id, int(row["seq"])),
-                ),
-                "score": sim,
-            })
+            vec_hit = SearchHit(
+                doc_id=doc_id,
+                mount_id=int(row["mount_id"]),
+                title=row["title"],
+                rel_path=row["rel_path"],
+                abs_path=row["abs_path"],
+                format=row["format"],
+                score=sim,
+                chunk_seq=int(row["seq"]),
+                snippet_html=snippet_html,
+                snippet_text=snippet_text,
+                route="vector",
+                char_start=self.db.chunk_start(doc_id, int(row["seq"])),
+            )
+            vec_hit.raw_score = sim
+            final_score = ranking.rrf(len(vec_only), weight=0.7)
+            ranking.set_score(
+                vec_hit, final_score, "vector",
+                {"vector_similarity": sim, "vector_rank": rank + 1, "rrf_vector": final_score},
+            )
+            vec_only.append({"hit": vec_hit, "score": sim, "final": final_score})
         out: list[SearchHit] = []
         for item in sorted(fused.values(), key=lambda x: x["score"], reverse=True):
             hit = item["hit"]
             if item["bm25"] and item["vec"]:
                 hit.route = "hybrid"
-            hit.score = float(item["score"])
+            ranking.set_score(hit, item["score"], "rrf_vector", item["parts"])
             out.append(hit)
             if len(out) >= topk:
                 break
         for item in sorted(vec_only, key=lambda x: x["score"], reverse=True):
             if len(out) >= topk:
                 break
+            ranking.set_score(
+                item["hit"], item["final"], "vector",
+                {**ranking.components(item["hit"]), "rrf_vector": item["final"]},
+            )
             out.append(item["hit"])
         return out
     # ---- 路由 ----

@@ -121,6 +121,31 @@ class RerankHitsTest(unittest.TestCase):
                 out = agent.rerank_hits("q", hits)
                 self.assertEqual([h["title"] for h in out], ["a", "b", "c"])
                 self.assertTrue(all(h.get("reranked") for h in out))
+                self.assertEqual(out[0]["score_stage"], "rerank")
+                self.assertIn("rerank_score", out[0]["score_components"])
+                for a, b in zip(out, out[1:]):
+                    self.assertGreaterEqual(a["score"], b["score"])
+            finally:
+                agent.stop()
+
+    def test_does_not_truncate_to_top_k(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            agent = NodeAgent(Config(db_path=base / "c.db", config_dir=base / "cfg"))
+            try:
+                agent.reranker = self.FakeReranker()  # type: ignore[assignment]
+                agent.rerank_config.enabled = True
+                agent.rerank_config.max_candidates = 5
+                agent.rerank_config.top_k = 2
+                hits = [
+                    {"title": "a", "snippet_text": "aaa"},
+                    {"title": "b", "snippet_text": "bbb"},
+                    {"title": "c", "snippet_text": "ccc"},
+                    {"title": "d", "snippet_text": "ddd"},
+                    {"title": "e", "snippet_text": "eee"},
+                ]
+                out = agent.rerank_hits("q", hits)
+                self.assertEqual(len(out), 5)
             finally:
                 agent.stop()
 

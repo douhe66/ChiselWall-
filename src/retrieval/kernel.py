@@ -25,7 +25,7 @@ class RetrievalKernel:
         if not q:
             return []
         hits = [h.to_dict() for h in self.agent.search_local_expanded(q, topk)]
-        return self.agent.rerank_hits(q, hits)
+        return self.agent.rerank_hits(q, hits)[: max(1, int(topk))]
 
     async def search(self, session: EvidenceSession, query: str, *, topk: int = 8) -> list[Evidence]:
         query = (query or "").strip()

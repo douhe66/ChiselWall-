@@ -129,7 +129,7 @@ python tests/make_fixtures.py
 python -m unittest discover -s tests -p "test_*.py"
 ```
 
-当前：**357 项测试通过**（Windows）。评测脚本：
+当前：**376 项测试通过**（Windows）。评测脚本：
 
 ```bash
 python tests/eval_retrieval.py --db ~/.chiselwall/chiselwall.db
@@ -170,6 +170,8 @@ models/       本地向量/重排模型（不提交 Git）
 - 追问重新检索：[docs/design/followup-search.md](docs/design/followup-search.md)
 - AI 流式/上下文：[docs/design/ai-streaming-context.md](docs/design/ai-streaming-context.md)
 - 验收报告：[docs/review/](docs/review/)
+- 架构/代码评审（v0.9.59，含 30 项整改勾选）：[docs/review/architecture-review-0.9.59.md](docs/review/architecture-review-0.9.59.md)
+- 问答质量整改计划与实施记录：[docs/planning/quality-remediation-0.9.60.md](docs/planning/quality-remediation-0.9.60.md)
 - 未完成事项：[docs/planning/open-items.md](docs/planning/open-items.md)
 
 ### 已知限制
@@ -292,7 +294,7 @@ python tests/make_fixtures.py
 python -m unittest discover -s tests -p "test_*.py"
 ```
 
-Currently **357 tests pass** on Windows. Evaluation:
+Currently **376 tests pass** on Windows. Evaluation:
 
 ```bash
 python tests/eval_retrieval.py --db ~/.chiselwall/chiselwall.db

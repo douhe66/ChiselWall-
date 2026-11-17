@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Optional
@@ -28,10 +29,23 @@ HASH_SAMPLE_SIZE = 1024 * 1024
 
 
 def file_hash(path: Path, size: int) -> str:
-    """内容哈希：小文件全量 sha256；大文件（>8MB）采样头部 1MB。"""
+    """内容哈希：小文件全量 sha256；大文件采样头/中/尾各 1MB。
+
+    只哈希头部会漏掉同长度文件的尾部修改；多采两个点仍保持有界读取，
+    避免每次变更都全量哈希大文件。
+    """
+    if size <= HASH_SAMPLE_LIMIT:
+        with open(path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+    h = hashlib.sha256()
+    h.update(str(int(size)).encode("ascii"))
     with open(path, "rb") as f:
-        data = f.read() if size <= HASH_SAMPLE_LIMIT else f.read(HASH_SAMPLE_SIZE)
-    return hashlib.sha256(data).hexdigest()
+        positions = [0, max(0, size // 2 - HASH_SAMPLE_SIZE // 2), max(0, size - HASH_SAMPLE_SIZE)]
+        for pos in positions:
+            f.seek(pos)
+            h.update(pos.to_bytes(8, "little"))
+            h.update(f.read(HASH_SAMPLE_SIZE))
+    return h.hexdigest()
 
 
 class Indexer:
@@ -177,34 +191,53 @@ class Indexer:
         if prev and prev.status == "indexed" and prev.hash == h and prev.size == size:
             return "unchanged"  # mtime 变了但内容未变（touch/同内容重写）：哈希兜底
         fresh = replace(meta, mtime=mtime, size=size, hash=h)
-        doc_id = self.db.upsert_doc(
-            mount_id,
-            fresh.rel_path,
-            str(fresh.abs_path),
-            fresh.title,
-            fresh.format,
-            fresh.mtime,
-            fresh.size,
-            fresh.hash,
-            status="pending",
-        )
+        # 先解析；解析失败时旧 indexed 内容不被 pending/空 chunk 覆盖。
         try:
             parsed = connector.read_doc(fresh.rel_path)
         except ParseError as exc:
-            self.db.set_doc_status(doc_id, "error", error=exc.message)
+            self._mark_error(mount_id, fresh, exc.message)
             return "error"
         except Exception as exc:  # 红线④：隔离任何意外异常，不阻断整体索引
-            self.db.set_doc_status(doc_id, "error", error=exc.__class__.__name__ + ": " + str(exc))
+            self._mark_error(mount_id, fresh, exc.__class__.__name__ + ": " + str(exc))
             return "error"
         result = self.chunker.split(parsed.text)
-        n = self.db.set_chunks(
-            doc_id,
-            result.chunks,
-            self.tokenize,
-            trigram=self.trigram_enabled,
-            trigram_max_chars=self.trigram_max_chars,
-        )
-        self.db.set_doc_status(doc_id, "indexed", chunk_count=n, truncated=result.truncated, error=None)
+        if prev is not None:
+            doc_id = int(prev.doc_id)
+        else:
+            doc_id = self.db.upsert_doc(
+                mount_id,
+                fresh.rel_path,
+                str(fresh.abs_path),
+                fresh.title,
+                fresh.format,
+                fresh.mtime,
+                fresh.size,
+                fresh.hash,
+                status="pending",
+            )
+        try:
+            tokenized = [self.tokenize(chunk) for chunk in result.chunks]
+            n = self.db.replace_doc_chunks(
+                doc_id,
+                result.chunks,
+                tokenized,
+                title=fresh.title,
+                rel_path=fresh.rel_path,
+                abs_path=str(fresh.abs_path),
+                format=fresh.format,
+                mtime=fresh.mtime,
+                size=fresh.size,
+                file_hash=fresh.hash,
+                truncated=result.truncated,
+                trigram=self.trigram_enabled,
+                trigram_max_chars=self.trigram_max_chars,
+            )
+        except Exception as exc:
+            # 事务已回滚：老文档保留旧 indexed 内容；新文档保持 pending 并标错。
+            logging.getLogger("chiselwall.indexer").exception("原子替换失败 doc_id=%s", doc_id)
+            if prev is None:
+                self.db.set_doc_status(doc_id, "error", error=exc.__class__.__name__ + ": " + str(exc))
+            return "error"
         for cb in ([self.on_indexed] if self.on_indexed is not None else []) + list(self._extra_indexed_callbacks):
             try:
                 cb(doc_id)

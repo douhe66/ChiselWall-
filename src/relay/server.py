@@ -24,6 +24,11 @@ log = logging.getLogger("chiselwall.relay")
 
 ALL_GROUP = "全员组"
 MAX_MESSAGE_BYTES = 256 * 1024
+MAX_CLIENT_QUEUE = 256
+
+
+class SlowConsumer(Exception):
+    """客户端发送队列已满，必须断开，避免拖慢其他连接。"""
 
 
 class TokenBucket:
@@ -298,6 +303,33 @@ def create_app(
         async def send(payload: dict) -> None:
             await ws.send_text(json.dumps(payload, ensure_ascii=False))
 
+        queue: asyncio.Queue = asyncio.Queue(maxsize=MAX_CLIENT_QUEUE)
+        overflow = False
+
+        async def enqueue(payload: dict) -> None:
+            nonlocal overflow
+            if overflow:
+                raise SlowConsumer("client queue closed")
+            try:
+                queue.put_nowait(payload)
+            except asyncio.QueueFull:
+                overflow = True
+                log.warning("relay 慢消费者队列满，断开 user=%s size=%s", user or "?", MAX_CLIENT_QUEUE)
+                asyncio.create_task(ws.close())
+                raise SlowConsumer("client queue full") from None
+
+        async def writer() -> None:
+            while True:
+                payload = await queue.get()
+                try:
+                    await ws.send_text(json.dumps(payload, ensure_ascii=False))
+                except Exception:
+                    return
+                finally:
+                    queue.task_done()
+
+        writer_task = asyncio.create_task(writer(), name="chiselwall-relay-writer")
+
         try:
             while True:
                 raw = await ws.receive_text()
@@ -324,7 +356,7 @@ def create_app(
                     prev = hub.clients.get(nick)
                     if prev is not None and prev.send is not send:
                         log.info("relay: user %s reconnected, replacing old connection", nick)
-                    hello = hub.register(nick, list(msg.get("groups") or []), send)
+                    hello = hub.register(nick, list(msg.get("groups") or []), enqueue)
                     log.info("relay hello user=%s groups=%s online=%s", nick, hello.get("groups"), len(hub.clients))
                     await send(hello)
                     await hub.broadcast_online()
@@ -413,8 +445,13 @@ def create_app(
         except Exception:
             log.exception("relay ws error")
         finally:
+            writer_task.cancel()
+            try:
+                await writer_task
+            except (asyncio.CancelledError, Exception):
+                pass
             if user is not None:
-                hub.unregister(user, send)
+                hub.unregister(user, enqueue)
                 log.info("relay disconnected user=%s client=%s online=%s", user, client_host, len(hub.clients))
                 try:
                     await hub.broadcast_online()

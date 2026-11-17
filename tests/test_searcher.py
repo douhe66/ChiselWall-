@@ -97,7 +97,19 @@ class SearcherTest(unittest.TestCase):
         hits = self.searcher.search("测试", topk=8)
         self.assertGreater(len(hits), 1)
         for a, b in zip(hits, hits[1:]):
-            self.assertLessEqual(a.score, b.score)  # bm25 升序：越小越相关
+            # raw_score 是 BM25，越小越相关；对外 score 已统一为越大越好的 RRF。
+            self.assertLessEqual(a.raw_score, b.raw_score)
+            self.assertGreaterEqual(a.score, b.score)
+
+    def test_ranking_provenance(self) -> None:
+        hits = self.searcher.search("测试", topk=5)
+        self.assertGreater(len(hits), 0)
+        for hit in hits:
+            self.assertTrue(hit.score_stage)
+            self.assertIsInstance(hit.score_components, dict)
+            self.assertIn("bm25", hit.score_components)
+        for a, b in zip(hits, hits[1:]):
+            self.assertGreaterEqual(a.score, b.score)
 
     def test_empty_query(self) -> None:
         self.assertEqual(self.searcher.search("   "), [])

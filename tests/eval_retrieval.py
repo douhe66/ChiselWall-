@@ -7,18 +7,17 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from eval_common import expected_doc_ids
 from indexer.db import IndexDB
+from retrieval.metrics import binary_relevances, ndcg
 from searcher.search import Searcher
-
-
-def dcg(rels: list[int], k: int = 10) -> float:
-    return sum(r / math.log2(i + 2) for i, r in enumerate(rels[:k]))
 
 
 def main() -> int:
@@ -38,16 +37,20 @@ def main() -> int:
         strong = [h for h in hits if h.get("tier", "strong") != "weak"]
         weak = [h for h in hits if h.get("tier", "strong") == "weak"]
         titles = [h["title"] for h in strong]
-        expect = item.get("expect") or []
-        rank = next((i + 1 for i, t in enumerate(titles) if t in expect), 0)
+        expected = expected_doc_ids(db, item)
+        if not expected:
+            print("SKIP（期望为空）:", item["query"], item.get("expect"), item.get("expect_title_like"))
+            continue
+        ids = [int(h["doc_id"]) for h in strong[:10]]
+        rank = next((i + 1 for i, doc_id in enumerate(ids) if doc_id in expected), 0)
         r5 = 1 if 0 < rank <= 5 else 0
-        rels = [1 if t in expect else 0 for t in titles[:10]]
-        ndcg = dcg(rels) / (dcg([1]) or 1.0)
+        rels = binary_relevances(ids, expected, 10)
+        score_ndcg = ndcg(rels, 10)
         total_r5 += r5
-        total_ndcg += ndcg
+        total_ndcg += score_ndcg
         total_weak += len(weak)
-        print("%-16s rank=%-2s recall@5=%s weak=%d  top=%s" % (
-            item["query"], rank or "-", r5, len(weak),
+        print("%-16s rank=%-2s recall@5=%s nDCG=%.2f weak=%d  top=%s" % (
+            item["query"], rank or "-", r5, score_ndcg, len(weak),
             " | ".join(t[:18] for t in titles[:4]),
         ))
     n = max(1, len(golden))

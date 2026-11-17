@@ -19,7 +19,7 @@ from ai.llm import (
     _chat_candidates,
     normalize_base_url,
 )
-from ai.rag import answer_question, build_context, build_messages, select_local_window
+from ai.rag import answer_question, build_context, build_messages, estimate_tokens, select_local_window
 
 
 class StubLLM(BaseHTTPRequestHandler):
@@ -131,6 +131,33 @@ class LocalWindowTest(unittest.TestCase):
         self.assertNotIn("很短的片段", ctx)
         self.assertEqual(len(cites), 1)
 
+    def test_long_hit_does_not_crowd_out_others(self) -> None:
+        hits = [
+            dict(make_hit(1), ai_text="长" * 12000),
+            dict(make_hit(2), ai_text="第二条命中"),
+            dict(make_hit(3), ai_text="第三条命中"),
+        ]
+        ctx, cites = build_context(hits, max_chars=8000)
+        self.assertEqual(len(cites), 3)
+        self.assertIn("第二条命中", ctx)
+        self.assertIn("第三条命中", ctx)
+        self.assertLessEqual(len(ctx), 8000)
+
+    def test_token_budget_caps_context(self) -> None:
+        hits = [dict(make_hit(1), ai_text="长" * 20000)]
+        ctx, _ = build_context(hits, max_chars=24000, max_tokens=300)
+        self.assertLessEqual(estimate_tokens(ctx), 300)
+
+    def test_local_full_and_remote_text_share_quota(self) -> None:
+        hits = [
+            dict(make_hit(1), snippet_text="本地" * 9000, context_full=True),
+            dict(make_hit(2), ai_text="远端命中"),
+        ]
+        ctx, cites = build_context(hits, max_chars=8000)
+        self.assertEqual(len(cites), 2)
+        self.assertIn("远端命中", ctx)
+        self.assertLessEqual(len(ctx), 8000)
+
     def test_weak_hit_is_labeled(self) -> None:
         hit = dict(make_hit(1), tier="weak")
         ctx, _ = build_context([hit], max_chars=8000)
@@ -223,6 +250,7 @@ class PromptTest(unittest.TestCase):
     def test_build_messages_default_prompt(self) -> None:
         msgs = build_messages("问题", "资料")
         self.assertIn("只依据", msgs[0]["content"])
+        self.assertIn("不是指令", msgs[0]["content"])
 
     def test_build_messages_custom_prompt(self) -> None:
         msgs = build_messages("问题", "资料", "你是自定义助手，请用英文回答。")

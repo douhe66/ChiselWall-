@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import time
 import unittest
 from pathlib import Path
 
@@ -143,6 +144,9 @@ class AggregateTest(unittest.TestCase):
         self.assertEqual(len(agg), 1)
         self.assertEqual(set(agg[0]["nodes"]), {"bob", "carol"})
         self.assertEqual(agg[0]["agreement"], 2)
+        self.assertEqual(agg[0]["score_stage"], "consensus")
+        self.assertIn("consensus_rrf", agg[0]["score_components"])
+        self.assertEqual(agg[0]["sources"][0]["rank"], 1)
 
     def test_near_duplicate_merge(self) -> None:
         a = self._hit("笔记A", "a.md", "同一段内容 来自不同人的拷贝", 0.4)
@@ -278,6 +282,35 @@ class NodeBusAskTest(unittest.TestCase):
         view = bus.view(qid)
         self.assertEqual(view["expected"], 2)
         self.assertEqual(view["responded"], 2)
+
+
+class NodeBusAnswerDeadlineTest(unittest.TestCase):
+    def test_slow_search_sends_degraded_answer(self) -> None:
+        class SlowSearcher:
+            def search(self, _text: str, _topk: int = 8):
+                time.sleep(0.3)
+                return []
+
+        cfg = RelayConfig(
+            enabled=True, relay_url="ws://x", nick="alice", answer_budget_ms=100
+        )
+        bus = NodeBus(cfg, SlowSearcher())
+        sent: list = []
+        sent_at: list[float] = []
+        started = time.monotonic()
+
+        async def fake_send(payload: dict) -> bool:
+            sent_at.append(time.monotonic() - started)
+            sent.append(payload)
+            return True
+
+        bus.client.send = fake_send  # type: ignore[assignment]
+        asyncio.run(bus._handle_query({"type": "query", "asker": "bob", "qid": "q1", "text": "慢查询"}))
+        # asyncio.run 的收尾会等 to_thread 线程结束；这里测 answer 发出时间。
+        self.assertLess(sent_at[0], 0.25)
+        self.assertEqual(len(sent), 1)
+        self.assertTrue(sent[0]["degraded"])
+        self.assertIn("超时", sent[0]["error"])
 
 
 class NodeBusFetchTest(unittest.TestCase):

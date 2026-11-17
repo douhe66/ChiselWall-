@@ -457,7 +457,8 @@
         <div v-if="askLatestPayload()" class="ask-results-meta">
           <span v-if="askLatestPayload().elapsed_ms !== undefined" class="badge">等待 {{ formatElapsed(askLatestPayload().elapsed_ms) }}</span>
           <span v-if="askLatestPayload().responded" class="badge">返回 {{ askLatestPayload().responded }}/{{ askLatestPayload().expected }} 位</span>
-          <span v-for="a in (askLatestPayload().answers || [])" :key="a.node" class="badge kind">@{{ a.node }} 检索 {{ formatElapsed(a.elapsed_ms) }} · {{ a.hit_count }} 条</span>
+          <span v-for="a in (askLatestPayload().answers || [])" :key="a.node" class="badge kind" :title="a.error || ''">@{{ a.node }} 检索 {{ formatElapsed(a.elapsed_ms) }} · {{ a.hit_count }} 条<template v-if="a.degraded"> · 超时</template></span>
+          <span v-if="askLatestPayload().context_truncated" class="badge route-fallback" title="部分过长的 AI 上下文已裁剪；命中卡片仍保留">部分长上下文已截断<template v-if="askLatestPayload().dropped_hits"> · 少 {{ askLatestPayload().dropped_hits }} 条</template></span>
         </div>
         <div class="ask-results-scroll">
           <div v-if="!askLatestHits().length" class="empty-state compact">

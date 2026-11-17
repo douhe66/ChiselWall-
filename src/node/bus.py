@@ -25,6 +25,9 @@ except ImportError:  # Linux 缺依赖时不要静默死任务；统一在 info(
 
 ALL_GROUP = "全员组"
 
+# relay 单条消息上限 256KB；answer 预留 16KB 给协议字段与 relay 包装。
+MAX_ANSWER_BYTES = 240 * 1024
+
 
 @dataclass
 class RelayConfig:
@@ -145,9 +148,14 @@ class AskService:
                     "node": a.get("node", "?"),
                     "elapsed_ms": a.get("elapsed_ms", 0),
                     "hit_count": len(a.get("hits") or []),
+                    "degraded": bool(a.get("degraded")),
+                    "error": str(a.get("error") or ""),
                 }
                 for a in it.answers
             ],
+            "context_truncated": any(bool(a.get("context_truncated")) for a in it.answers),
+            "context_truncated_hits": sum(int(a.get("context_truncated_hits") or 0) for a in it.answers),
+            "dropped_hits": sum(int(a.get("dropped_hits") or 0) for a in it.answers),
             "aggregated": agg,
             "ai": it.ai,
             "followups": it.followups,
@@ -165,12 +173,67 @@ def _snippet_key(hit: dict) -> str:
     return "".join(text.split())[:60]
 
 
+def _wire_bytes(payload: dict) -> int:
+    return len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+
+
+def fit_answer_payload(payload: dict, limit: int = MAX_ANSWER_BYTES) -> tuple[dict, int, int]:
+    """把 answer 压到 relay 上限内。
+
+    优先摘除最长的 ai_text，保留全部命中元数据；仍超限时再从尾部丢弃命中，
+    用 dropped_hits 明确告知提问端，避免整条 answer 被 relay 静默丢掉。
+    返回 (payload, removed_ai_text_count, dropped_hit_count)。
+    """
+    out = dict(payload)
+    hits = [dict(h) for h in (payload.get("hits") or []) if isinstance(h, dict)]
+    out["hits"] = hits
+    if _wire_bytes(out) <= limit:
+        return out, 0, 0
+
+    removed = 0
+    for h in sorted(hits, key=lambda x: len(str(x.get("ai_text") or "")), reverse=True):
+        if not h.get("ai_text"):
+            continue
+        h.pop("ai_text", None)
+        removed += 1
+        if _wire_bytes(out) <= limit:
+            break
+
+    dropped = 0
+    while _wire_bytes(out) > limit and hits:
+        hits.pop()
+        dropped += 1
+
+    if removed:
+        out["context_truncated"] = True
+        out["context_truncated_hits"] = removed
+    if dropped:
+        out["context_truncated"] = True
+        out["dropped_hits"] = dropped
+    # 加上截断标记后仍不能越线。
+    while _wire_bytes(out) > limit and hits:
+        hits.pop()
+        dropped += 1
+        out["context_truncated"] = True
+        out["dropped_hits"] = dropped
+    out["answer_bytes"] = _wire_bytes(out)
+    while _wire_bytes(out) > limit and hits:
+        hits.pop()
+        dropped += 1
+        out["context_truncated"] = True
+        out["dropped_hits"] = dropped
+        out["answer_bytes"] = _wire_bytes(out)
+    return out, removed, dropped
+
+
 def aggregate(answers: list[dict], *, topk: int = 30) -> list[dict]:
     """多节点结果聚合（设计 §15.5 L2/L3 规则版）。
 
     answers: [{"node": "bob", "hits": [hit, ...]}]（各节点 hits 已按本地相关性排序）
     返回：按（共识数, 排名分）排序的条目，条目含 nodes（哪些节点命中）。
     """
+    from searcher import ranking
+
     merged: dict[tuple, dict] = {}
     for ans in answers:
         node = str(ans.get("node") or "?")
@@ -185,12 +248,15 @@ def aggregate(answers: list[dict], *, topk: int = 30) -> list[dict]:
                     if cand.get("_dup") and cand["_dup"] == dup:
                         entry = cand
                         break
-            rank_score = 1.0 / (idx + 1.0)
+            rank_score = ranking.rrf(idx)
             source = {
                 "node": node,
                 "doc_id": hit.get("doc_id"),
                 "rel_path": hit.get("rel_path"),
                 "title": hit.get("title"),
+                "rank": idx + 1,
+                "score": hit.get("score"),
+                "stage": hit.get("score_stage"),
             }
             if entry is None:
                 entry = dict(hit)
@@ -199,18 +265,27 @@ def aggregate(answers: list[dict], *, topk: int = 30) -> list[dict]:
                 entry["sources"] = [source]
                 entry["_score"] = rank_score
                 entry["agreement"] = 1
+                entry["remote_scores"] = [hit.get("score")]
                 merged[key] = entry
             else:
                 if node not in entry["nodes"]:
                     entry["nodes"].append(node)
                     entry["sources"].append(source)
                     entry["agreement"] = len(entry["nodes"])
+                entry.setdefault("remote_scores", []).append(hit.get("score"))
                 entry["_score"] = max(entry["_score"], rank_score)
     out = list(merged.values())
     for e in out:
         e.pop("_dup", None)
-        e["score"] = round(float(e.pop("_score", 0.0)) + 0.15 * (e.get("agreement", 1) - 1), 4)
-    out.sort(key=lambda e: (e.get("agreement", 1), e.get("score", 0.0)), reverse=True)
+        consensus = float(e.pop("_score", 0.0))
+        agreement = int(e.get("agreement", 1))
+        final_score = consensus + 0.15 * (agreement - 1)
+        e["remote_score"] = e.get("score")
+        ranking.set_score(
+            e, final_score, "consensus",
+            {"consensus_rrf": consensus, "agreement": agreement},
+        )
+    out.sort(key=lambda e: e.get("score", 0.0), reverse=True)
     return out[:topk]
 
 
@@ -483,8 +558,9 @@ class NodeBus:
                 log.exception("检索计划生成失败，回退原问题")
                 plan = None
             plan_dict = plan.to_dict() if hasattr(plan, "to_dict") else None
-        elif use_plan and self.rewrite_fn is not None:
+        elif use_plan and self.plan_fn is None and self.rewrite_fn is not None:
             # 兼容旧调用/测试：仅在未提供 plan_fn 时保留旧的单查询改写。
+            # 有 plan_fn 但未就绪（无 AI）时直接原文检索，不能落入旧改写分支。
             try:
                 probe = await asyncio.to_thread(self.searcher.search, text, 5)
             except Exception:
@@ -625,6 +701,30 @@ class NodeBus:
                 self.asks.note_error(qid, str(msg.get("code") or "relay_error"))
 
     async def _handle_query(self, msg: dict) -> None:
+        """节点侧应答时间盒：超时也要回一条降级 answer，避免提问端静默少人。"""
+        asker = str(msg.get("asker") or "")
+        if asker in ("", self.cfg.nick):
+            return
+        started = time.monotonic()
+        try:
+            await asyncio.wait_for(self._handle_query_inner(msg), timeout=self._answer_deadline_s)
+        except asyncio.TimeoutError:
+            log.warning(
+                "节点应答超时 qid=%s asker=%s budget=%.0fms",
+                msg.get("qid"), asker, self._answer_deadline_s * 1000,
+            )
+            await self.client.send({
+                "type": "answer",
+                "asker": asker,
+                "qid": str(msg.get("qid") or ""),
+                "node": self.cfg.nick,
+                "elapsed_ms": int((time.monotonic() - started) * 1000),
+                "hits": [],
+                "degraded": True,
+                "error": "节点检索超时（预算 %dms）" % int(self._answer_deadline_s * 1000),
+            })
+
+    async def _handle_query_inner(self, msg: dict) -> None:
         asker = str(msg.get("asker") or "")
         if asker in ("", self.cfg.nick):
             return
@@ -674,17 +774,22 @@ class NodeBus:
             allowed = self._allowed.setdefault(asker, {})
             for h in hits:
                 allowed[int(h.doc_id)] = now + 600.0  # 10 分钟内可请求全文预览
-            # 应答内容只含片段与出处；relay 只转发，不落盘
-            await self.client.send(
-                {
-                    "type": "answer",
-                    "asker": asker,
-                    "qid": str(msg.get("qid") or ""),
-                    "node": self.cfg.nick,
-                    "elapsed_ms": elapsed,
-                    "hits": payload_hits,
-                }
-            )
+            # 应答内容只含片段与出处；relay 只转发，不落盘。
+            answer_payload, removed, dropped = fit_answer_payload({
+                "type": "answer",
+                "asker": asker,
+                "qid": str(msg.get("qid") or ""),
+                "node": self.cfg.nick,
+                "elapsed_ms": elapsed,
+                "hits": payload_hits,
+            })
+            if removed or dropped:
+                log.warning(
+                    "answer 超出 relay 上限，已裁剪 qid=%s node=%s ai_text=%s dropped_hits=%s bytes=%s",
+                    answer_payload.get("qid"), self.cfg.nick, removed, dropped,
+                    answer_payload.get("answer_bytes"),
+                )
+            await self.client.send(answer_payload)
 
     async def _handle_fetch(self, msg: dict) -> None:
         """对端请求全文预览：仅限本机刚返回给该提问者的文档（10 分钟有效）。"""

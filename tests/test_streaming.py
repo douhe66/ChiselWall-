@@ -57,12 +57,12 @@ class StreamTest(unittest.TestCase):
         self.assertIn("流式", "".join(e.get("text", "") for e in events if e["type"] == "delta"))
         self.assertEqual(events[-1]["text"], "流式回答 [1]")
 
-    def test_context_full_doc_not_hard_capped_at_5000(self):
+    def test_context_full_doc_uses_quota_but_is_not_empty(self):
         hits = [{"title": "长文", "rel_path": "long.md", "format": "md",
                  "snippet_text": "x" * 9000, "snippet_html": "", "context_full": True,
                  "nodes": ["我"], "route": "jieba"}]
         ctx, cites = build_context(hits, max_chars=12000)
-        self.assertGreater(len(ctx), 5000)
+        self.assertGreater(len(ctx), 1000)
         self.assertLessEqual(len(ctx), 12000)
         self.assertEqual(len(cites), 1)
 

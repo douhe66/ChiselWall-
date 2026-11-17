@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import shutil
 import sqlite3
 import sys
@@ -29,6 +28,10 @@ from indexer.db import IndexDB
 from searcher.search import SearchHit, Searcher
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from eval_common import expected_doc_ids
+from retrieval.metrics import binary_relevances, ndcg
+
 EMB_DIR = ROOT / "models" / "bge-small-zh-v1.5"
 RERANK_DIR = ROOT / "models" / "rerank" / "bge-reranker-base-int8"
 
@@ -77,19 +80,15 @@ def rerank_hits(reranker, hits: list[SearchHit], query: str, top_k: int = 10) ->
     return out[:top_k]
 
 
-def dcg(rels: list[int], k: int = 10) -> float:
-    return sum(r / math.log2(i + 2) for i, r in enumerate(rels[:k]))
-
-
 def measure(hits: list[SearchHit], expected: set[int], k: int = 10) -> dict:
-    ids = [h.doc_id for h in hits[:k]]
+    ids = [int(h.doc_id) for h in hits[:k]]
     rank = next((i + 1 for i, doc_id in enumerate(ids) if doc_id in expected), 0)
-    rels = [1 if doc_id in expected else 0 for doc_id in ids]
+    rels = binary_relevances(ids, expected, k)
     return {
         "rank": rank,
         "recall5": 1.0 if 0 < rank <= 5 else 0.0,
         "mrr": (1.0 / rank) if rank else 0.0,
-        "ndcg10": dcg(rels) / (dcg([1]) or 1.0),
+        "ndcg10": ndcg(rels, k),
         "weak": sum(1 for h in hits if getattr(h, "tier", "strong") == "weak"),
     }
 
@@ -127,10 +126,7 @@ def main() -> int:
         # 期望文档（按标题 LIKE 解析）
         items = []
         for item in golden:
-            expected: set[int] = set()
-            for pat in item.get("expect_title_like") or []:
-                rows = db.query("SELECT doc_id FROM docs WHERE status='indexed' AND title LIKE ?", (pat,))
-                expected.update(int(r["doc_id"]) for r in rows)
+            expected = expected_doc_ids(db, item)
             if not expected:
                 print("SKIP（期望为空）:", item["query"], item.get("expect_title_like"))
                 continue

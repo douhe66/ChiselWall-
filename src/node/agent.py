@@ -105,6 +105,7 @@ class NodeAgent:
         self.vector_store_cfg = VectorConfigStore(config.config_dir)
         self.vector_config = self.vector_store_cfg.load()
         self.vector_index = None
+        self._vector_error = ""
         self._build_vector_index()
         self.remote_searcher = Searcher(self.db, scope="remote", vector_index=self.vector_index)
         # P1 重排（默认关；提问端精排，失败回退 P0）
@@ -1008,16 +1009,23 @@ class NodeAgent:
         if session is None:
             return {"ok": False, "error": "会话不存在"}
         view = self.bus.view(qid) or {}
+        if not view:
+            return {"ok": False, "error": "提问已过期或不存在，请重新检索"}
         aggregated = view.get("aggregated") or []
         if aggregated:
             aggregated = self.enrich_display(aggregated)
             if rerank:
                 aggregated = self.rerank_hits(str(view.get("text") or ""), aggregated)
         turns = self.ask_sessions.turns(sid)
+        latest_question = ""
+        for turn in reversed(turns):
+            if turn.get("role") == "user":
+                latest_question = str(turn.get("content") or "")
+                break
         payload = {
             "qid": qid,
             "aggregated": aggregated[:30],
-            "search_text": view.get("search_text") or question,
+            "search_text": view.get("search_text") or latest_question,
             "plan": view.get("plan"),
             "answers": view.get("answers") or [],
             "elapsed_ms": view.get("elapsed_ms") or 0,
@@ -1278,9 +1286,11 @@ class NodeAgent:
         from ai.vector_backend import build_backend
         from ai.vector_index import VectorIndex
         from ai.vectorstore import VectorStore
+        from ai import onnx_support
 
         cfg = self.vector_config
         self.vector_index = None
+        self._vector_error = ""
         self.searcher.vector_index = None
         self.indexer.on_indexed = None
         if not cfg.enabled:
@@ -1292,6 +1302,11 @@ class NodeAgent:
                     dim=cfg.dim, use_system_proxy=cfg.use_system_proxy,
                 )
             else:
+                ok, why = onnx_support.probe_onnx()
+                if not ok:
+                    self._vector_error = why
+                    log.warning("向量检索不可用，已回退关键词检索：%s", why)
+                    return
                 embeddings = LocalOnnxEmbeddings(cfg.model_dir or None, dim=cfg.dim)
             store = VectorStore(self.config.db_path, dim=cfg.dim)
             backend = build_backend(cfg.backend, self.config.db_path, cfg.dim, store=store)
@@ -1306,7 +1321,8 @@ class NodeAgent:
                 self.remote_searcher.vector_index = self.vector_index
             if self.vector_index.ready:
                 self.indexer.on_indexed = self.vector_index.index_doc
-        except Exception:
+        except Exception as exc:
+            self._vector_error = str(exc) or exc.__class__.__name__
             log.exception("初始化向量索引失败，回退关键词检索")
             self.vector_index = None
             self.searcher.vector_index = None
@@ -1318,7 +1334,7 @@ class NodeAgent:
         data.update({
             "ready": bool(vi is not None and vi.ready),
             "vectors": (vi.backend.count() if vi is not None else 0),
-            "error": (vi.last_error if vi is not None else ""),
+            "error": (vi.last_error if vi is not None else self._vector_error),
             "backend": (vi.backend.name if vi is not None else cfg.backend),
             "metric": (vi.backend.metric if vi is not None else ""),
             "model_id": (vi.model_id if vi is not None else ""),
@@ -1373,6 +1389,10 @@ class NodeAgent:
     def rerank_public(self) -> dict:
         data = self.rerank_config.public_dict()
         r = self.reranker
+        if self.rerank_config.provider == "local" and r is None:
+            from ai import onnx_support
+            ok, why = onnx_support.probe_onnx()
+            data["error"] = "" if ok else why
         data.update({
             "ready": bool(r is not None and getattr(r, "ready", False)),
             "name": (getattr(r, "name", "") if r is not None else ""),
@@ -1455,15 +1475,32 @@ class NodeAgent:
                     while len(self._rerank_cache) > int(cfg.cache_size):
                         self._rerank_cache.popitem(last=False)
         ranked = sorted(zip(strong[:n], scores), key=lambda pair: pair[1], reverse=True)
+        from searcher import ranking
+
         out: list[dict] = []
-        for hit, score in ranked:
+        for rank, (hit, score) in enumerate(ranked):
             item = dict(hit)
             item["reranked"] = True
             item["rerank_score"] = round(float(score), 4)
+            parts = ranking.components(item)
+            parts.update({
+                "pre_rerank_score": float(item.get("score") or 0.0),
+                "rerank_score": float(score),
+                "rerank_rank": rank + 1,
+            })
+            item["score_components"] = parts
             out.append(item)
         out.extend(strong[n:])
         out.extend(weak)
-        return out[: max(1, cfg.top_k)]
+        # 最终 score 用最终顺序的 RRF，保证“顺序越前分越高”；
+        # rerank 原始分保留在 score_components，供解释与调参。
+        for rank, item in enumerate(out):
+            parts = ranking.components(item)
+            parts["rrf_final"] = ranking.rrf(rank)
+            parts["final_rank"] = rank + 1
+            ranking.set_score(item, ranking.rrf(rank), "rerank", parts)
+        # 只重排，不在这里截断；最终展示层按调用方 topk 决定条数。
+        return out
 
     def rerank_test(self) -> dict:
         r = self.reranker

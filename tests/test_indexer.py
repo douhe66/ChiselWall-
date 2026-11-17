@@ -14,6 +14,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -75,6 +76,16 @@ class IndexerTest(unittest.TestCase):
             s["excluded_by_reason"],
             {"user_rule": 0, "default": 6, "unsupported_format": 2, "duplicate_md_twin": 1},
         )
+
+    def test_large_file_tail_hash_changes(self) -> None:
+        p = self.mount_root / "large-sampled.log"
+        p.write_bytes(b"a" * (9 * 1024 * 1024))
+        before = file_hash(p, p.stat().st_size)
+        with p.open("r+b") as f:
+            f.seek(-32, 2)
+            f.write(b"b" * 32)
+        after = file_hash(p, p.stat().st_size)
+        self.assertNotEqual(before, after)
 
     def test_scan_idempotent(self) -> None:
         self._scan()
@@ -181,6 +192,39 @@ class IndexerTest(unittest.TestCase):
         res = self.indexer.index_file(self.mount_id, self.connector, "中文笔记.md")
         self.assertEqual(res, "indexed")
         self.assertGreaterEqual(self._fts("content_jieba : " + phrase("新增词条甲乙丙丁")), 1)
+
+    def test_atomic_replace_rolls_back_old_chunks(self) -> None:
+        self._scan()
+        doc = self.db.get_doc(self.mount_id, "中文笔记.md")
+        old = self.db.get_chunk_texts(doc.doc_id)
+        with mock.patch.object(self.db, "_update_docs_meta_locked", side_effect=RuntimeError("boom")):
+            with self.assertRaises(RuntimeError):
+                self.db.replace_doc_chunks(
+                    doc.doc_id,
+                    ["新内容"],
+                    ["新内容"],
+                    title="中文笔记",
+                    rel_path="中文笔记.md",
+                    abs_path=doc.abs_path,
+                    format="md",
+                    mtime=doc.mtime or 0.0,
+                    size=doc.size or 0,
+                    file_hash="newhash",
+                    truncated=False,
+                )
+        self.assertEqual(self.db.get_chunk_texts(doc.doc_id), old)
+        self.assertEqual(self.db.get_doc(self.mount_id, "中文笔记.md").status, "indexed")
+
+    def test_reindex_failure_keeps_old_indexed_content(self) -> None:
+        self._scan()
+        with open(self.mount_root / "中文笔记.md", "a", encoding="utf-8") as f:
+            f.write("\n\n旧内容应保留。\n")
+        with mock.patch.object(self.db, "replace_doc_chunks", side_effect=RuntimeError("boom")):
+            result = self.indexer.index_file(self.mount_id, self.connector, "中文笔记.md")
+        self.assertEqual(result, "error")
+        doc = self.db.get_doc(self.mount_id, "中文笔记.md")
+        self.assertEqual(doc.status, "indexed")
+        self.assertGreaterEqual(self._fts("content_jieba : " + phrase("凿壁测试词条")), 1)
 
     def test_content_change_removes_old_terms(self) -> None:
         self._scan()

@@ -1,7 +1,9 @@
 # 未完成事项 / Open Items
 
-> 版本：v0.9.58（2026-11-16）
+> 版本：v0.9.60（2026-11-17）
 > 说明：本文件只记录"还没做完/还没验证"的事项；已完成功能见 README 与 docs/review/。
+> 架构/代码评审（v0.9.59）的整改台账见 [docs/review/architecture-review-0.9.59.md](../review/architecture-review-0.9.59.md)：P0 8 项、P1 15 项、P2 7 项，逐条可勾选，发布前先清 P0。
+> 问答质量优先的整改记录见 [docs/planning/quality-remediation-0.9.60.md](quality-remediation-0.9.60.md)：R-23/R-21/R-04/R-18/R-22 已实施。
 
 ## P0：发布前必须完成
 
@@ -48,7 +50,7 @@
 - [ ] **引用区间审计**：citation 带 read_ranges/content_hash，UI 可查看回答依据的具体区间。
 - [ ] **旧 AI 端点物理清理**：/summarize、/followup/stream、前端无用流式代码；主路径已不依赖。
 - [ ] **远程文档版本一致性补测**：远程 search 已带 hash、fetch 带 expected_hash；需要双节点实测"搜索后修改文档 -> fetch 拒绝"。
-- [ ] **本地 rerank ONNX 运行库崩溃**：已加 Python 异常熔断，但 Rust ONNX abort 仍可能带走进程；需要进程隔离/HTTP 优先。
+- [ ] **本地 rerank ONNX 运行库崩溃**：已加子进程探测并回退关键词检索（主进程不导入 ONNX）；完整 worker 进程隔离仍未做，打包冻结版仍需验证。
 - [ ] **旧文档 M6 版本号清理**：docs/review/m6-packaging-report.md 仍停留在旧版本。
 
 ## 建议顺序

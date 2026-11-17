@@ -17,6 +17,8 @@ from typing import Optional
 
 import httpx
 
+from ai import onnx_support
+
 log = logging.getLogger("chiselwall.rerank")
 
 
@@ -183,7 +185,7 @@ class LocalCrossEncoderReranker:
 
     @property
     def ready(self) -> bool:
-        if self._manifest is None:
+        if self._manifest is None or not onnx_support.available():
             return False
         model_file = str(self._manifest.get("model_file") or "model.onnx")
         tokenizer = str(self._manifest.get("tokenizer") or "tokenizer.json")
@@ -199,6 +201,9 @@ class LocalCrossEncoderReranker:
         with self._lock:
             if self._sess is not None:
                 return
+            ok, why = onnx_support.probe_onnx()
+            if not ok:
+                raise RuntimeError("ONNX Runtime 不可用，已回退关键词排序：" + why)
             import numpy as np
             import onnxruntime as ort
             from tokenizers import Tokenizer

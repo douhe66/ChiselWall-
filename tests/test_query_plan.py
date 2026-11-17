@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from ai.query_plan import evaluate_plan
 from ai.query_rewrite import QueryExpandConfig, QueryPlan, QueryRewriter, parse_plan
-from node.bus import NodeBus, RelayConfig
+from node.bus import MAX_ANSWER_BYTES, NodeBus, RelayConfig, fit_answer_payload
 from searcher.search import SearchHit
 
 
@@ -124,6 +124,38 @@ class BusPlanTest(unittest.TestCase):
         self.assertEqual(calls, [])
         self.assertEqual(sent[0]["text"], "原始问题")
         self.assertIsNone(sent[0]["plan"])
+
+    def test_answer_payload_fits_relay_limit(self):
+        hits = [
+            {"doc_id": i, "title": "文档%d" % i, "rel_path": "%d.md" % i,
+             "snippet_text": "片段", "ai_text": "中" * 12000}
+            for i in range(8)
+        ]
+        payload = {"type": "answer", "qid": "q1", "node": "我", "hits": hits}
+        fitted, removed, dropped = fit_answer_payload(payload)
+        wire = len(__import__("json").dumps(fitted, ensure_ascii=False).encode("utf-8"))
+        self.assertLessEqual(wire, MAX_ANSWER_BYTES)
+        self.assertEqual(len(fitted["hits"]), 8)
+        self.assertGreater(removed, 0)
+        self.assertEqual(dropped, 0)
+        self.assertTrue(fitted["context_truncated"])
+
+    def test_small_answer_payload_untouched(self):
+        payload = {"type": "answer", "qid": "q1", "node": "我", "hits": [{"title": "t", "ai_text": "ok"}]}
+        fitted, removed, dropped = fit_answer_payload(payload)
+        self.assertEqual((removed, dropped), (0, 0))
+        self.assertNotIn("context_truncated", fitted)
+
+    def test_not_ready_skips_legacy_rewrite(self):
+        probe_calls = []
+        rewrite_calls = []
+        bus, sent = self._bus(lambda q: None, plan_ready_fn=lambda: False)
+        bus.searcher.search = lambda text, topk=5: probe_calls.append(text) or []
+        bus.rewrite_fn = lambda text: rewrite_calls.append(text) or ["改写词"]
+        asyncio.run(bus.ask("原始问题", ["全员组"]))
+        self.assertEqual(probe_calls, [])
+        self.assertEqual(rewrite_calls, [])
+        self.assertEqual(sent[0]["text"], "原始问题")
 
 
 if __name__ == "__main__":
